@@ -32,6 +32,10 @@ dependencies {
 
 application {
     mainClass.set("com.phoenix.App")
+
+    applicationDefaultJvmArgs = listOf(
+        "-Dphoenix.adapter=${System.getProperty("phoenix.adapter", "linux")}"
+    )
 }
 
 tasks.test {
