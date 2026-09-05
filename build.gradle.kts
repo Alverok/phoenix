@@ -4,7 +4,7 @@ plugins {
 }
 
 group = "com.phoenix"
-version = "0.1.0"
+version = "0.2.0"
 
 java {
     // Machine currently has JDK 21 installed, so we build against that for now.
@@ -33,9 +33,11 @@ dependencies {
 application {
     mainClass.set("com.phoenix.App")
 
-    applicationDefaultJvmArgs = listOf(
-        "-Dphoenix.adapter=${System.getProperty("phoenix.adapter", "linux")}"
-    )
+    // Day 2 note: the old "-Dphoenix.adapter=..." JVM arg is gone.
+    // Adapter selection was a Day-1-only concept for proving IoC with one
+    // active adapter; Phoenix Core now registers Linux + Android + ESP32
+    // nodes simultaneously and picks per-task via TaskDispatcher/Scheduler,
+    // so there's no longer a single "active adapter" to select at launch.
 }
 
 tasks.test {
