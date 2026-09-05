@@ -1,115 +1,297 @@
-# Phoenix — Day 1 Prototype
+# Phoenix
 
-A lightweight, IoC-based middleware and orchestrator for heterogeneous
-legacy edge devices. This is the Day 1 vertical slice: **interface →
-reference adapters → Guice-wired Core**, nothing else yet.
+### A Lightweight, IoC-Based Middleware and Orchestrator for Heterogeneous Legacy Edge Devices
 
-## What this proves
+Phoenix is a research prototype that explores lightweight orchestration of heterogeneous,
+resource-constrained and legacy edge devices through hardware abstraction, modular
+adapters, and Inversion of Control / Dependency Injection.
 
-`App.java` never imports `LinuxAdapter`, `AndroidAdapter`, or `Esp32Adapter`.
-It only knows `IHardwareAdapter`. Guice decides which concrete class to
-hand back, based on a `-Dphoenix.adapter=...` flag — so hardware classes
-can be swapped **without touching or recompiling Core code**. That's the
-IoC/modularity claim from Section 3 of the Design & Solution doc, made
-executable.
+The project is being developed as part of B.Tech Computer Science and Engineering
+Project Phase II at Amrita Vishwa Vidyapeetham.
 
-## Requirements
+---
 
-- JDK 21 (already what this project targets — see note in `build.gradle.kts`
-  about revisiting 17 vs 21 once we test JIVE compatibility)
-- No global Gradle install needed once the wrapper is generated (see below)
+## Project Status
 
-## First-time setup
+Current status: **Prototype / Day-1 Core Skeleton**
 
-This repo ships the Gradle *build files* but not the wrapper binary
-(`gradlew`), since that has to be generated once on a machine with Gradle
-installed. Any one teammate runs this once and commits the result:
+The current prototype establishes:
+
+- Phoenix Core project structure
+- `IHardwareAdapter` hardware abstraction
+- Linux, Android and ESP32 reference adapters
+- Guice-based IoC / Dependency Injection
+- Adapter selection through configuration
+- Automated unit tests
+- Gradle Wrapper-based reproducible builds
+
+The distributed node registry, scheduler, MQTT communication, real hardware execution,
+trace-based architectural validation and benchmarking are being developed incrementally.
+
+---
+
+## Architecture
+
+At a high level:
+
+```text
+                    +----------------------+
+                    |     Phoenix Core     |
+                    |----------------------|
+                    | Device Registry      |
+                    | Scheduler            |
+                    | IoC / DI             |
+                    | Task Dispatcher      |
+                    | Trace Logger         |
+                    +----------+-----------+
+                               |
+                     IHardwareAdapter
+                               |
+              +----------------+----------------+
+              |                |                |
+        Linux Adapter    Android Adapter   ESP32 Adapter
+              |                |                |
+          Linux node       Android node       ESP32
+```
+
+The Core depends on the `IHardwareAdapter` abstraction rather than directly depending
+on hardware-specific implementations.
+
+---
+
+## Repository Structure
+
+```text
+phoenix/
+├── build.gradle.kts
+├── settings.gradle.kts
+├── gradlew
+├── gradlew.bat
+├── gradle/
+│   └── wrapper/
+│       ├── gradle-wrapper.jar
+│       └── gradle-wrapper.properties
+├── src/
+│   ├── main/
+│   │   └── java/
+│   │       └── com/phoenix/
+│   │           ├── App.java
+│   │           ├── adapter/
+│   │           │   ├── IHardwareAdapter.java
+│   │           │   └── impl/
+│   │           │       ├── LinuxAdapter.java
+│   │           │       ├── AndroidAdapter.java
+│   │           │       └── Esp32Adapter.java
+│   │           ├── core/
+│   │           │   └── PhoenixModule.java
+│   │           └── model/
+│   │               ├── NodeInfo.java
+│   │               ├── ResourceStatus.java
+│   │               ├── TaskDescriptor.java
+│   │               └── TaskResult.java
+│   └── test/
+│       └── java/
+│           └── com/phoenix/
+│               └── PhoenixModuleTest.java
+└── README.md
+```
+
+> Note: A `build/` directory (compiled classes, distributions, reports, test results)
+> is generated locally by Gradle and is intentionally excluded from version control.
+
+---
+
+## Getting Started
+
+### Prerequisites
+
+- Git
+- JDK 21
+- Linux/macOS/Windows with a terminal
+- Internet access for the first Gradle dependency download
+
+Gradle itself does **not** need to be installed globally. The repository includes the
+Gradle Wrapper.
+
+### Current development toolchain
+
+| Tool           | Version |
+| -------------- | ------- |
+| Java           | 21      |
+| Gradle Wrapper | 9.7.1   |
+| Guice          | 7.0.0   |
+| JUnit          | 5.x     |
+
+> Note: The project design currently targets Java 17 for the eventual JIVE-based
+> architectural-validation pipeline. The present Core prototype uses Java 21 while
+> compatibility with JIVE is being verified.
+
+---
+
+## Clone the Repository
 
 ```bash
-gradle wrapper --gradle-version 9.7.1
-git add gradlew gradlew.bat gradle/
-git commit -m "chore: add gradle wrapper"
+git clone https://github.com/Alverok/phoenix.git
+cd phoenix
 ```
 
-After that, everyone else just uses `./gradlew`, no local Gradle install
-required.
-
-## Run it
+Check that the wrapper is executable on Linux/macOS:
 
 ```bash
-./gradlew run                              # LinuxAdapter (default)
-./gradlew run -Dphoenix.adapter=android     # AndroidAdapter
-./gradlew run -Dphoenix.adapter=esp32       # Esp32Adapter
+chmod +x gradlew
 ```
 
-Expected output (linux example):
+Verify Java:
 
-```
-=== Phoenix Core starting ===
-[LinuxAdapter] Registering high-performance Linux node...
-[Phoenix] Node registered: id=node-linux-01 class=Linux cpuCores=8 memoryMb=16384
-[Phoenix] Submitting task: id=task-001 type=Monte-Carlo-Pi
-[LinuxAdapter] Executing task natively: task-001
-[LinuxAdapter] Result reported: SUCCESS
-[Phoenix] Task complete: status=SUCCESS output=Computed Monte-Carlo pi ~= 3.14159
-=== Phoenix Core shutting down ===
+```bash
+java -version
+javac -version
 ```
 
-## Test it
+Verify the project:
+
+```bash
+./gradlew --version
+```
+
+---
+
+## Build the Project
+
+Run:
+
+```bash
+./gradlew clean build
+```
+
+A successful build should end with:
+
+```text
+BUILD SUCCESSFUL
+```
+
+This command compiles the project and runs the test suite.
+
+---
+
+## Run Phoenix
+
+The current Day-1 prototype allows the active hardware adapter to be selected through
+the `phoenix.adapter` system property.
+
+### Default: Linux
+
+```bash
+./gradlew run
+```
+
+### Android
+
+```bash
+./gradlew run -Dphoenix.adapter=android
+```
+
+### ESP32
+
+```bash
+./gradlew run -Dphoenix.adapter=esp32
+```
+
+These selections are currently reference adapter implementations used to demonstrate
+the IoC/DI architecture. They do not yet represent actual remote Android or ESP32
+task execution.
+
+---
+
+## Run Tests
 
 ```bash
 ./gradlew test
 ```
 
-`PhoenixModuleTest` mechanically proves the swap works (linux/android/esp32
-+ a rejected unknown adapter name). This is the artifact to show your guide
-instead of just eyeballing console output — it's a repeatable, automated
-proof of the IoC claim.
+For a full verification:
 
-## Project layout
-
-```
-com.phoenix
-├── App.java              # entry point — only knows IHardwareAdapter
-├── model/                 # NodeInfo, ResourceStatus, TaskDescriptor, TaskResult
-├── adapter/
-│   ├── IHardwareAdapter.java   # the golden interface
-│   └── impl/
-│       ├── LinuxAdapter.java
-│       ├── AndroidAdapter.java
-│       └── Esp32Adapter.java
-└── core/
-    └── PhoenixModule.java # Guice module + MapBinder-based adapter registry
+```bash
+./gradlew clean test
 ```
 
-## Day 1 milestone checklist
+---
 
-- [x] Domain models compile (`model/`)
-- [x] `IHardwareAdapter` contract defined
-- [x] Three reference (fake) adapters implemented
-- [x] Guice wires an adapter into Core without Core knowing the concrete type
-- [x] Swapping adapters requires zero source changes (`-Dphoenix.adapter=...`)
-- [x] Automated test proves the swap (`PhoenixModuleTest`)
-- [ ] Device Registry (Day 2)
-- [ ] Weighted-cost Scheduler (Day 2)
-- [ ] Dispatcher wiring Scheduler → Plugin Manager → Adapter (Day 2)
-- [ ] Fourth adapter added with zero Core changes, as a live demo (Day 3)
-- [ ] SQLite persistence (Day 4)
-- [ ] Core ↔ mock node over MQTT (Day 4)
+## Development Workflow
 
-## Suggested team split for Days 2–4
+Before starting work:
 
-- **Core architecture + Guice** — owns `core/`, keeps the plugin registry
-  clean as it grows into the real "IoC Plugin Manager".
-- **Scheduler** — owns the weighted-cost node selection
-  (`w1*execTime + w2*energy + w3*load + w4*latency`, see Design doc Sec. 7).
-- **Adapters** — gets one *real* adapter working end-to-end (Linux is
-  easiest: real `/proc` stats instead of hardcoded numbers).
-- **Infrastructure** — SQLite schema + MQTT topics, once the interfaces
-  above have stabilized (don't start this in parallel with Core changes).
+```bash
+git pull
+./gradlew clean test
+```
 
-## What NOT to build this week
+Create a branch:
 
-Real Android/ESP32 execution, JIVE integration, the SQL pattern-detection
-pipeline, and k3s/k0s/Oakestra benchmarking are all S7/S8 milestones per
-the project timeline (Table 1 in the Design doc) — not Day 1–4 work.
+```bash
+git switch -c feature/<your-feature-name>
+```
+
+Example:
+
+```bash
+git switch -c feature/node-registry
+```
+
+After making changes:
+
+```bash
+./gradlew clean test
+git status
+git add .
+git commit -m "feat: add node registry"
+```
+
+Push the branch:
+
+```bash
+git push -u origin feature/<your-feature-name>
+```
+
+Open a Pull Request rather than pushing directly to `main`.
+
+When adding a new hardware target, prefer implementing a new `IHardwareAdapter` rather
+than modifying Core scheduling logic.
+
+---
+
+## Planned Components
+
+The project will progressively introduce:
+
+- Device Registry
+- Weighted-cost task scheduler
+- Task Dispatcher
+- MQTT-based node communication
+- SQLite persistence
+- REST / CLI gateway
+- Linux node agent
+- Android adapter
+- ESP32 adapter
+- Failure detection and task re-placement
+- Execution tracing
+- Architecture/design-pattern verification
+- Benchmarking against lightweight orchestration baselines
+
+---
+
+## Team
+
+Project: **Phoenix**
+
+Guide: **Dr. Swaminathan Jayaraman**
+
+Amrita Vishwa Vidyapeetham
+B.Tech Computer Science and Engineering
+Project Phase II — Academic Year 2026–2027
+
+---
+
+## License
+
+TODO
