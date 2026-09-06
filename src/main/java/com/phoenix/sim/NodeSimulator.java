@@ -22,6 +22,13 @@ import com.phoenix.model.ResourceStatus;
  * agent eventually will, and lets {@link DeviceRegistry} be the sole
  * authority for identity assignment (a fresh {@code nodeId} for a new
  * node; a reused one on {@code existingNodeId != null} reconnects).
+ *
+ * <p>Mid-review update: {@code Linux-01} now registers with the adapter's
+ * *real* live {@link ResourceStatus} (actual CPU load / free RAM read off
+ * this machine via {@link IHardwareAdapter#getResourceStatus()}) instead of
+ * a hardcoded mock. {@code Linux-02}, Android, and ESP32 remain simulated
+ * mocks for now — real detection for those needs the physical
+ * device/network layer (future milestone).
  */
 public class NodeSimulator {
 
@@ -36,7 +43,9 @@ public class NodeSimulator {
 
     /** Registers the Day-2 demo fleet: two Linux nodes, one Android, one ESP32. */
     public void bootstrapDemoFleet() {
-        registerInstance("linux", "Linux-01", ResourceStatus.of(15.5, 8192, 2, 0, 8.0, 4.5));
+        IHardwareAdapter linuxAdapter = adapterRegistry.resolve("linux");
+        registerInstance("linux", "Linux-01", linuxAdapter.getResourceStatus());
+
         registerInstance("linux", "Linux-02", ResourceStatus.of(55.0, 6144, 4, 2, 12.0, 5.0));
         registerInstance("android", "Android-01", ResourceStatus.of(32.0, 2048, 1, 1, 25.0, 2.0));
         registerInstance("esp32", "ESP32-01", ResourceStatus.of(60.0, 0, 1, 3, 60.0, 0.5));
