@@ -83,6 +83,13 @@ public class DeviceRegistry {
     public Optional<NodeRecord> get(String nodeId) {
         return Optional.ofNullable(nodes.get(nodeId));
     }
+    
+    /** Finds a node by display name — used to detect "same device re-announcing" for upsert-style heartbeats. */
+    public Optional<NodeRecord> findByDisplayName(String displayName) {
+        return nodes.values().stream()
+                .filter(r -> r.info().displayName().equals(displayName))
+                .findFirst();
+    }
 
     public List<NodeRecord> list() {
         return List.copyOf(nodes.values());
