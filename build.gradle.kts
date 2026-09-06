@@ -29,12 +29,12 @@ application {
     mainClass.set("com.phoenix.App")
 }
 
-// NEW: forward the terminal's stdin to the running app, so App.java's
-// interactive Scanner (list/dispatch/quit commands) can actually read
-// keyboard input. Without this, Gradle leaves stdin disconnected and
-// Scanner.nextLine() throws NoSuchElementException immediately.
 tasks.named<JavaExec>("run") {
     standardInput = System.`in`
+
+    System.getProperty("phoenix.advertiseAddress")?.let {
+        systemProperty("phoenix.advertiseAddress", it)
+    }
 }
 
 tasks.test {

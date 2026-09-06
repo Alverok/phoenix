@@ -29,6 +29,7 @@ import com.phoenix.sim.NodeSimulator;
 public class App {
 
     private static final int REGISTRATION_PORT = 8080;
+
     private static int taskCounter = 1;
 
     public static void main(String[] args) throws Exception {
@@ -36,10 +37,13 @@ public class App {
 
         Injector injector = Guice.createInjector(new PhoenixModule());
 
-        RegistrationServer registrationServer = injector.getInstance(RegistrationServer.class);
+        RegistrationServer registrationServer =
+                injector.getInstance(RegistrationServer.class);
+
         registrationServer.start(REGISTRATION_PORT);
 
         String ip = getLocalIpAddress();
+
         System.out.println("=========================================================");
         System.out.println("[Phoenix] Real-device registration endpoint:");
         System.out.println("          http://" + ip + ":" + REGISTRATION_PORT + "/register");
@@ -51,29 +55,38 @@ public class App {
         simulator.bootstrapDemoFleet();
 
         DeviceRegistry registry = injector.getInstance(DeviceRegistry.class);
-        AdapterRegistry adapterRegistry = injector.getInstance(AdapterRegistry.class);
-        TaskDispatcher dispatcher = injector.getInstance(TaskDispatcher.class);
+        AdapterRegistry adapterRegistry =
+                injector.getInstance(AdapterRegistry.class);
+        TaskDispatcher dispatcher =
+                injector.getInstance(TaskDispatcher.class);
 
         printMenu();
+
         Scanner scanner = new Scanner(System.in);
 
         while (true) {
             System.out.print("\nphoenix> ");
+
             String cmd = scanner.nextLine().trim().toLowerCase();
 
             switch (cmd) {
                 case "list" -> printNodeSummary(registry, registrationServer);
+
                 case "dispatch" -> {
                     refreshLinuxHeartbeat(registry, adapterRegistry);
                     runDispatch(dispatcher);
                 }
+
                 case "quit", "exit" -> {
                     registrationServer.stop();
                     System.out.println("=== Phoenix Core shutting down ===");
                     return;
                 }
+
                 case "help" -> printMenu();
-                default -> System.out.println("Unknown command. Type 'help' for options.");
+
+                default ->
+                        System.out.println("Unknown command. Type 'help' for options.");
             }
         }
     }
@@ -86,13 +99,18 @@ public class App {
         System.out.println("  quit      - stop Phoenix Core");
     }
 
-    private static void printNodeSummary(DeviceRegistry registry, RegistrationServer registrationServer) {
+    private static void printNodeSummary(
+            DeviceRegistry registry,
+            RegistrationServer registrationServer) {
+
         System.out.println();
         System.out.println("#########################################################");
         System.out.println("#  PHOENIX NODE SUMMARY                                #");
         System.out.println("#########################################################");
+
         for (NodeRecord node : registry.list()) {
             String tag;
+
             if (registrationServer.getLiveNodeIds().contains(node.nodeId())) {
                 tag = "[LIVE - NETWORK DEVICE] state=" + node.state();
             } else if ("Linux-01".equals(node.info().displayName())) {
@@ -100,7 +118,9 @@ public class App {
             } else {
                 tag = "[SIMULATED - MOCK DATA]";
             }
-            System.out.printf("  %-22s %-9s %-8s %2dc / %5dMB   %s%n",
+
+            System.out.printf(
+                    "  %-22s %-9s %-8s %2dc / %5dMB   %s%n",
                     node.info().displayName(),
                     node.info().hardwareClass(),
                     node.info().adapterType(),
@@ -108,24 +128,35 @@ public class App {
                     node.info().memoryMb(),
                     tag);
         }
+
         System.out.println("#########################################################");
     }
 
-    private static void refreshLinuxHeartbeat(DeviceRegistry registry, AdapterRegistry adapterRegistry) {
+    private static void refreshLinuxHeartbeat(
+            DeviceRegistry registry,
+            AdapterRegistry adapterRegistry) {
+
         String linuxNodeId = registry.list().stream()
                 .filter(n -> "Linux-01".equals(n.info().displayName()))
                 .map(NodeRecord::nodeId)
                 .findFirst()
                 .orElse(null);
+
         if (linuxNodeId != null) {
             IHardwareAdapter linuxAdapter = adapterRegistry.resolve("linux");
-            registry.updateStatus(linuxNodeId, linuxAdapter.getResourceStatus());
+
+            registry.updateStatus(
+                    linuxNodeId,
+                    linuxAdapter.getResourceStatus());
         }
     }
 
     private static void runDispatch(TaskDispatcher dispatcher) {
-        String taskId = "task-" + String.format("%03d", taskCounter++);
-        TaskDescriptor task = new TaskDescriptor(taskId, "Monte-Carlo-Pi", 2, 512);
+        String taskId =
+                "task-" + String.format("%03d", taskCounter++);
+
+        TaskDescriptor task =
+                new TaskDescriptor(taskId, "Monte-Carlo-Pi", 2, 512);
 
         DispatchResult result = dispatcher.dispatch(task);
 
@@ -137,21 +168,59 @@ public class App {
     }
 
     private static String getLocalIpAddress() {
+        String override = System.getProperty("phoenix.advertiseAddress");
+
+        if (override != null && !override.isBlank()) {
+            return override;
+        }
+
+        String fallback = null;
+
         try {
-            Enumeration<NetworkInterface> interfaces = NetworkInterface.getNetworkInterfaces();
+            Enumeration<NetworkInterface> interfaces =
+                    NetworkInterface.getNetworkInterfaces();
+
             while (interfaces.hasMoreElements()) {
                 NetworkInterface iface = interfaces.nextElement();
-                if (iface.isLoopback() || !iface.isUp()) continue;
-                Enumeration<InetAddress> addresses = iface.getInetAddresses();
+
+                if (iface.isLoopback() || !iface.isUp()) {
+                    continue;
+                }
+
+                String name = iface.getName().toLowerCase();
+
+                boolean looksVirtual =
+                        name.startsWith("docker")
+                                || name.startsWith("br-")
+                                || name.startsWith("veth")
+                                || name.startsWith("tun")
+                                || name.startsWith("vethernet");
+
+                Enumeration<InetAddress> addresses =
+                        iface.getInetAddresses();
+
                 while (addresses.hasMoreElements()) {
                     InetAddress addr = addresses.nextElement();
-                    if (addr.getAddress().length == 4 && !addr.isLoopbackAddress()) {
+
+                    if (addr.getAddress().length != 4
+                            || addr.isLoopbackAddress()) {
+                        continue;
+                    }
+
+                    if (!looksVirtual) {
                         return addr.getHostAddress();
+                        // first real-looking interface wins immediately
+                    }
+
+                    if (fallback == null) {
+                        fallback = addr.getHostAddress();
+                        // keep as last resort only
                     }
                 }
             }
         } catch (Exception ignored) {
         }
-        return "127.0.0.1";
+
+        return fallback != null ? fallback : "127.0.0.1";
     }
 }
