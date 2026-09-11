@@ -1,0 +1,454 @@
+package com.phoenix.net;
+
+import java.io.IOException;
+import java.io.OutputStream;
+import java.net.InetSocketAddress;
+import java.nio.charset.StandardCharsets;
+import java.time.Instant;
+import java.util.Map;
+import java.util.Optional;
+import java.util.Set;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.Executors;
+import java.util.concurrent.TimeUnit;
+
+import com.google.gson.Gson;
+import com.google.inject.Inject;
+import com.google.inject.Singleton;
+import com.phoenix.core.DeviceRegistry;
+import com.phoenix.model.NodeRecord;
+import com.phoenix.model.NodeRegistrationRequest;
+import com.phoenix.model.NodeStatus;
+import com.phoenix.model.ResourceStatus;
+import com.sun.net.httpserver.HttpExchange;
+import com.sun.net.httpserver.HttpServer;
+
+/**
+ * Core-side HTTP gateway for Phoenix Node Agents.
+ *
+ * <p>The server intentionally knows about the transport format, but does not
+ * perform scheduling or hardware-specific execution. It translates external
+ * REGISTER/HEARTBEAT messages into Phoenix domain operations on DeviceRegistry.
+ */
+@Singleton
+public class RegistrationServer {
+
+    private static final long STALE_AFTER_MS = 20_000;
+    private static final double UNKNOWN_CPU_FALLBACK = 50.0;
+
+    private final DeviceRegistry deviceRegistry;
+    private final Gson gson = new Gson();
+
+    private final Map<String, String> nodeIdByDeviceId =
+            new ConcurrentHashMap<>();
+
+    private final Map<String, Instant> lastSeen =
+            new ConcurrentHashMap<>();
+
+    private final Set<String> liveNodeIds =
+            ConcurrentHashMap.newKeySet();
+
+    private HttpServer server;
+
+    @Inject
+    public RegistrationServer(DeviceRegistry deviceRegistry) {
+        this.deviceRegistry = deviceRegistry;
+    }
+
+    public void start(int port) throws IOException {
+        server = HttpServer.create(
+                new InetSocketAddress(port),
+                0
+        );
+
+        server.createContext("/register", this::handleRegister);
+        server.createContext("/heartbeat", this::handleHeartbeat);
+
+        // The built-in executor is sufficient for this lightweight prototype.
+        server.setExecutor(null);
+        server.start();
+
+        System.out.println(
+                "[RegistrationServer] Listening for Phoenix Node Agents on port "
+                        + port
+        );
+
+        Executors.newSingleThreadScheduledExecutor(r -> {
+            Thread thread = new Thread(r, "phoenix-heartbeat-monitor");
+            thread.setDaemon(true);
+            return thread;
+        }).scheduleAtFixedRate(
+                this::checkStaleness,
+                5,
+                5,
+                TimeUnit.SECONDS
+        );
+    }
+
+    public void stop() {
+        if (server != null) {
+            server.stop(0);
+            server = null;
+        }
+    }
+
+    public Set<String> getLiveNodeIds() {
+        return Set.copyOf(liveNodeIds);
+    }
+
+    private void handleRegister(HttpExchange exchange) throws IOException {
+        if (!"POST".equalsIgnoreCase(exchange.getRequestMethod())) {
+            sendJson(
+                    exchange,
+                    405,
+                    """
+                    {"status":"error","message":"POST required"}
+                    """
+            );
+            return;
+        }
+
+        try {
+            String body = readBody(exchange);
+            DeviceAnnouncement announcement =
+                    gson.fromJson(body, DeviceAnnouncement.class);
+
+            validateAnnouncement(announcement);
+
+            if (nodeIdByDeviceId.containsKey(announcement.deviceId)) {
+                String existingNodeId =
+                        nodeIdByDeviceId.get(announcement.deviceId);
+
+                deviceRegistry.get(existingNodeId).ifPresent(record -> {
+                    System.out.printf(
+                            "[RegistrationServer] Device %s already registered as node %s%n",
+                            announcement.deviceId,
+                            existingNodeId
+                    );
+                });
+
+                sendJson(
+                        exchange,
+                        200,
+                        "{\"status\":\"ok\",\"nodeId\":\""
+                                + existingNodeId
+                                + "\",\"message\":\"already_registered\"}"
+                );
+                return;
+            }
+
+            ResourceStatus initialStatus = ResourceStatus.of(
+                    UNKNOWN_CPU_FALLBACK,
+                    0,
+                    0,
+                    0,
+                    0.0,
+                    3.0
+            );
+
+            NodeRegistrationRequest request =
+                    new NodeRegistrationRequest(
+                            null,
+                            announcement.displayName,
+                            announcement.hardwareClass,
+                            announcement.architecture,
+                            announcement.cpuCores,
+                            announcement.memoryMb,
+                            announcement.adapterType,
+                            announcement.capabilities != null
+                                    ? announcement.capabilities
+                                    : Set.of(),
+                            initialStatus
+                    );
+
+            var nodeInfo = deviceRegistry.register(request);
+
+            nodeIdByDeviceId.put(
+                    announcement.deviceId,
+                    nodeInfo.nodeId()
+            );
+
+            liveNodeIds.add(nodeInfo.nodeId());
+            lastSeen.put(nodeInfo.nodeId(), Instant.now());
+
+            String remoteAddress =
+                    exchange.getRemoteAddress()
+                            .getAddress()
+                            .getHostAddress();
+
+            System.out.printf(
+                    "[RegistrationServer] Device registered: %s nodeId=%s source=%s%n",
+                    announcement.displayName,
+                    nodeInfo.nodeId(),
+                    remoteAddress
+            );
+
+            sendJson(
+                    exchange,
+                    200,
+                    "{\"status\":\"ok\",\"nodeId\":\""
+                            + nodeInfo.nodeId()
+                            + "\"}"
+            );
+
+        } catch (Exception exception) {
+            System.out.println(
+                    "[RegistrationServer] Registration rejected: "
+                            + exception.getMessage()
+            );
+
+            sendJson(
+                    exchange,
+                    400,
+                    "{\"status\":\"error\",\"message\":\""
+                            + escapeJson(exception.getMessage())
+                            + "\"}"
+            );
+        }
+    }
+
+    private void handleHeartbeat(HttpExchange exchange) throws IOException {
+        if (!"POST".equalsIgnoreCase(exchange.getRequestMethod())) {
+            sendJson(
+                    exchange,
+                    405,
+                    """
+                    {"status":"error","message":"POST required"}
+                    """
+            );
+            return;
+        }
+
+        try {
+            String body = readBody(exchange);
+
+            HeartbeatMessage heartbeat =
+                    gson.fromJson(body, HeartbeatMessage.class);
+
+            if (heartbeat.deviceId == null
+                    || heartbeat.deviceId.isBlank()) {
+                throw new IllegalArgumentException(
+                        "deviceId is required"
+                );
+            }
+
+            String nodeId =
+                    nodeIdByDeviceId.get(heartbeat.deviceId);
+
+            if (nodeId == null) {
+                sendJson(
+                        exchange,
+                        404,
+                        """
+                        {"status":"error","message":"unknown_device"}
+                        """
+                );
+                return;
+            }
+
+            double effectiveCpu =
+                    heartbeat.cpuUsagePercent >= 0
+                            ? heartbeat.cpuUsagePercent
+                            : UNKNOWN_CPU_FALLBACK;
+
+            ResourceStatus status = ResourceStatus.of(
+                    effectiveCpu,
+                    heartbeat.availableRamMb,
+                    heartbeat.activeTasks,
+                    heartbeat.queueLength,
+                    heartbeat.networkLatencyMs,
+                    heartbeat.energyCostEstimate
+            );
+
+            Optional<NodeRecord> existing =
+                    deviceRegistry.get(nodeId);
+
+            if (existing.isEmpty()) {
+                nodeIdByDeviceId.remove(heartbeat.deviceId);
+                sendJson(
+                        exchange,
+                        404,
+                        """
+                        {"status":"error","message":"node_not_found"}
+                        """
+                );
+                return;
+            }
+
+            deviceRegistry.updateStatus(nodeId, status);
+            deviceRegistry.updateHeartbeat(nodeId);
+
+            lastSeen.put(nodeId, Instant.now());
+
+            NodeStatus previousState =
+                    existing.get().state();
+
+            if (previousState == NodeStatus.DEGRADED) {
+                System.out.printf(
+                        "[RegistrationServer] Heartbeat resumed from node %s -> ONLINE%n",
+                        nodeId
+                );
+            }
+
+            System.out.printf(
+                    "[RegistrationServer] Heartbeat from %s: cpu=%s freeRam=%dMB%n",
+                    heartbeat.deviceId,
+                    heartbeat.cpuUsagePercent >= 0
+                            ? String.format("%.1f%%",
+                            heartbeat.cpuUsagePercent)
+                            : "N/A (assumed 50% for scheduling)",
+                    heartbeat.availableRamMb
+            );
+
+            sendJson(
+                    exchange,
+                    200,
+                    "{\"status\":\"ok\",\"nodeId\":\""
+                            + nodeId
+                            + "\"}"
+            );
+
+        } catch (Exception exception) {
+            System.out.println(
+                    "[RegistrationServer] Heartbeat rejected: "
+                            + exception.getMessage()
+            );
+
+            sendJson(
+                    exchange,
+                    400,
+                    "{\"status\":\"error\",\"message\":\""
+                            + escapeJson(exception.getMessage())
+                            + "\"}"
+            );
+        }
+    }
+
+    private void checkStaleness() {
+        Instant now = Instant.now();
+
+        for (String nodeId : liveNodeIds) {
+            Instant seen = lastSeen.get(nodeId);
+
+            if (seen == null) {
+                continue;
+            }
+
+            long ageMs =
+                    now.toEpochMilli() - seen.toEpochMilli();
+
+            if (ageMs <= STALE_AFTER_MS) {
+                continue;
+            }
+
+            deviceRegistry.get(nodeId).ifPresent(record -> {
+
+                if (record.state() == NodeStatus.ONLINE) {
+                    System.out.printf(
+                            "[RegistrationServer] No heartbeat from %s in %ds -> marking DEGRADED%n",
+                            record.info().displayName(),
+                            ageMs / 1000
+                    );
+
+                    deviceRegistry.markDegraded(nodeId);
+                }
+            });
+        }
+    }
+
+    private static String readBody(
+            HttpExchange exchange) throws IOException {
+
+        try (var inputStream = exchange.getRequestBody()) {
+            return new String(
+                    inputStream.readAllBytes(),
+                    StandardCharsets.UTF_8
+            );
+        }
+    }
+
+    private static void sendJson(
+            HttpExchange exchange,
+            int statusCode,
+            String body) throws IOException {
+
+        byte[] bytes =
+                body.getBytes(StandardCharsets.UTF_8);
+
+        exchange.getResponseHeaders()
+                .set("Content-Type", "application/json");
+
+        exchange.sendResponseHeaders(
+                statusCode,
+                bytes.length
+        );
+
+        try (OutputStream outputStream =
+                     exchange.getResponseBody()) {
+            outputStream.write(bytes);
+        }
+    }
+
+    private static void validateAnnouncement(
+            DeviceAnnouncement announcement) {
+
+        if (announcement == null) {
+            throw new IllegalArgumentException(
+                    "request body is required"
+            );
+        }
+
+        if (announcement.deviceId == null
+                || announcement.deviceId.isBlank()) {
+            throw new IllegalArgumentException(
+                    "deviceId is required"
+            );
+        }
+
+        if (announcement.displayName == null
+                || announcement.displayName.isBlank()) {
+            throw new IllegalArgumentException(
+                    "displayName is required"
+            );
+        }
+
+        if (announcement.hardwareClass == null) {
+            throw new IllegalArgumentException(
+                    "hardwareClass is required"
+            );
+        }
+
+        if (announcement.cpuCores <= 0) {
+            throw new IllegalArgumentException(
+                    "cpuCores must be greater than zero"
+            );
+        }
+
+        if (announcement.memoryMb <= 0) {
+            throw new IllegalArgumentException(
+                    "memoryMb must be greater than zero"
+            );
+        }
+    }
+
+    private static String escapeJson(String value) {
+        if (value == null) {
+            return "";
+        }
+
+        return value
+                .replace("\\", "\\\\")
+                .replace("\"", "\\\"");
+    }
+
+    public static class HeartbeatMessage {
+
+        public String deviceId;
+        public double cpuUsagePercent;
+        public long availableRamMb;
+        public int activeTasks;
+        public int queueLength;
+        public double networkLatencyMs;
+        public double energyCostEstimate;
+    }
+}
