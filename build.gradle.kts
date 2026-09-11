@@ -24,6 +24,7 @@ dependencies {
     // MapBinder used in PhoenixModule ships inside the core guice jar (no separate
     // guice-multibindings artifact needed since Guice 4.0+).
     implementation("com.google.inject:guice:7.0.0")
+    implementation("com.google.code.gson:gson:2.10.1")
 
     testImplementation(platform("org.junit:junit-bom:5.10.2"))
     testImplementation("org.junit.jupiter:junit-jupiter")
@@ -38,6 +39,17 @@ application {
     // active adapter; Phoenix Core now registers Linux + Android + ESP32
     // nodes simultaneously and picks per-task via TaskDispatcher/Scheduler,
     // so there's no longer a single "active adapter" to select at launch.
+}
+
+tasks.named<JavaExec>("run") {
+    standardInput = System.`in`
+
+    System.getProperty("phoenix.advertiseAddress")?.let {
+        systemProperty(
+            "phoenix.advertiseAddress",
+            it
+        )
+    }
 }
 
 tasks.test {

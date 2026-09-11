@@ -8,6 +8,7 @@ import com.phoenix.adapter.impl.AndroidAdapter;
 import com.phoenix.adapter.impl.Esp32Adapter;
 import com.phoenix.adapter.impl.LinuxAdapter;
 import com.phoenix.dispatch.TaskDispatcher;
+import com.phoenix.net.RegistrationServer;
 import com.phoenix.scheduler.GreedyCostScheduler;
 import com.phoenix.scheduler.PlacementCostModel;
 import com.phoenix.scheduler.TaskScheduler;
@@ -53,6 +54,7 @@ public class PhoenixModule extends AbstractModule {
 
         bind(DeviceRegistry.class).in(Singleton.class);
         bind(AdapterRegistry.class).in(Singleton.class);
+        bind(RegistrationServer.class).in(Singleton.class);
         bind(NodeSimulator.class).in(Singleton.class);
     }
 }
