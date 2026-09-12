@@ -3,6 +3,7 @@ package com.phoenix.net;
 import java.io.IOException;
 import java.io.OutputStream;
 import java.net.InetSocketAddress;
+import java.net.URLDecoder;
 import java.nio.charset.StandardCharsets;
 import java.time.Instant;
 import java.util.Map;
@@ -20,6 +21,8 @@ import com.phoenix.model.NodeRecord;
 import com.phoenix.model.NodeRegistrationRequest;
 import com.phoenix.model.NodeStatus;
 import com.phoenix.model.ResourceStatus;
+import com.phoenix.model.TaskDescriptor;
+import com.phoenix.model.TaskResult;
 import com.sun.net.httpserver.HttpExchange;
 import com.sun.net.httpserver.HttpServer;
 
@@ -37,6 +40,7 @@ public class RegistrationServer {
     private static final double UNKNOWN_CPU_FALLBACK = 50.0;
 
     private final DeviceRegistry deviceRegistry;
+    private final TaskQueueService taskQueue;
     private final Gson gson = new Gson();
 
     private final Map<String, String> nodeIdByDeviceId =
@@ -51,8 +55,12 @@ public class RegistrationServer {
     private HttpServer server;
 
     @Inject
-    public RegistrationServer(DeviceRegistry deviceRegistry) {
+    public RegistrationServer(
+            DeviceRegistry deviceRegistry,
+            TaskQueueService taskQueue) {
+
         this.deviceRegistry = deviceRegistry;
+        this.taskQueue = taskQueue;
     }
 
     public void start(int port) throws IOException {
@@ -63,6 +71,8 @@ public class RegistrationServer {
 
         server.createContext("/register", this::handleRegister);
         server.createContext("/heartbeat", this::handleHeartbeat);
+        server.createContext("/tasks/poll", this::handlePoll);
+        server.createContext("/results", this::handleResult);
 
         // The built-in executor is sufficient for this lightweight prototype.
         server.setExecutor(null);
@@ -94,6 +104,14 @@ public class RegistrationServer {
 
     public Set<String> getLiveNodeIds() {
         return Set.copyOf(liveNodeIds);
+    }
+
+    public Optional<String> deviceIdForNode(String nodeId) {
+        return nodeIdByDeviceId.entrySet()
+                .stream()
+                .filter(entry -> entry.getValue().equals(nodeId))
+                .map(Map.Entry::getKey)
+                .findFirst();
     }
 
     private void handleRegister(HttpExchange exchange) throws IOException {
@@ -294,8 +312,10 @@ public class RegistrationServer {
                     "[RegistrationServer] Heartbeat from %s: cpu=%s freeRam=%dMB%n",
                     heartbeat.deviceId,
                     heartbeat.cpuUsagePercent >= 0
-                            ? String.format("%.1f%%",
-                            heartbeat.cpuUsagePercent)
+                            ? String.format(
+                                    "%.1f%%",
+                                    heartbeat.cpuUsagePercent
+                            )
                             : "N/A (assumed 50% for scheduling)",
                     heartbeat.availableRamMb
             );
@@ -322,6 +342,178 @@ public class RegistrationServer {
                             + "\"}"
             );
         }
+    }
+
+    /**
+     * Poll for the next task assigned to a specific device.
+     *
+     * GET /tasks/poll?deviceId=<device-id>
+     *
+     * Returns:
+     *   200 + TaskDescriptor when a task exists
+     *   204 when the queue is empty
+     *   400 when deviceId is missing
+     *   404 when deviceId is unknown
+     */
+    private void handlePoll(HttpExchange exchange) throws IOException {
+        if (!"GET".equalsIgnoreCase(exchange.getRequestMethod())) {
+                exchange.sendResponseHeaders(405, -1);
+                return;
+        }
+
+        try {
+                String query = exchange.getRequestURI().getQuery();
+                String deviceId = extractQueryParameter(query, "deviceId");
+
+                if (deviceId == null || deviceId.isBlank()) {
+                sendJson(exchange, 400, "{\"status\":\"error\",\"message\":\"deviceId is required\"}");
+                return;
+                }
+
+                String nodeId = nodeIdByDeviceId.get(deviceId);
+                if (nodeId == null) {
+                sendJson(exchange, 404, "{\"status\":\"error\",\"message\":\"unknown_device\"}");
+                return;
+                }
+
+                Optional<TaskDescriptor> task = taskQueue.poll(deviceId);
+                if (task.isEmpty()) {
+                exchange.sendResponseHeaders(204, -1);
+                return;
+                }
+
+                TaskDescriptor descriptor = task.get();
+                // Hand-built JSON — sidesteps any Gson record-serialization surprises
+                // and matches the documented protocol shape exactly (id/type/samples).
+                String json = String.format(
+                        "{\"id\":\"%s\",\"type\":\"%s\",\"samples\":2000000}",
+                        escapeJson(descriptor.id()), escapeJson(descriptor.type()));
+
+                sendJson(exchange, 200, json);
+
+        } catch (Exception e) {
+                System.out.println("[RegistrationServer] /tasks/poll crashed: " + e);
+                e.printStackTrace();
+                sendJson(exchange, 500, "{\"status\":\"error\",\"message\":\"" + escapeJson(e.getMessage()) + "\"}");
+        }
+        }
+
+    /**
+     * Extract a single URL query parameter.
+     */
+    private static String extractQueryParameter(
+            String query,
+            String requestedName) {
+
+        if (query == null || query.isBlank()) {
+            return null;
+        }
+
+        for (String part : query.split("&")) {
+            String[] pair = part.split("=", 2);
+
+            if (pair.length != 2) {
+                continue;
+            }
+
+            if (pair[0].equals(requestedName)) {
+                return URLDecoder.decode(
+                        pair[1],
+                        StandardCharsets.UTF_8
+                );
+            }
+        }
+
+        return null;
+    }
+
+    /**
+     * Receive a completed task result from a Node Agent.
+     *
+     * POST /results
+     */
+    private void handleResult(HttpExchange exchange) throws IOException {
+        if (!"POST".equalsIgnoreCase(exchange.getRequestMethod())) {
+            exchange.sendResponseHeaders(405, -1);
+            return;
+        }
+
+        try {
+            String body = readBody(exchange);
+
+            ResultBody resultBody =
+                    gson.fromJson(body, ResultBody.class);
+
+            if (resultBody == null
+                    || resultBody.taskId == null
+                    || resultBody.status == null) {
+
+                sendJson(
+                        exchange,
+                        400,
+                        """
+                        {"status":"error","message":"invalid_result"}
+                        """
+                );
+                return;
+            }
+
+            TaskResult result = new TaskResult(
+                    resultBody.taskId,
+                    resultBody.status,
+                    resultBody.outputData
+            );
+
+            boolean matched =
+                    taskQueue.completeResult(result);
+
+            if (!matched) {
+                sendJson(
+                        exchange,
+                        404,
+                        """
+                        {"status":"error","message":"unknown_task"}
+                        """
+                );
+                return;
+            }
+
+            System.out.printf(
+                    "[RegistrationServer] Result received: task=%s status=%s%n",
+                    result.taskId(),
+                    result.status()
+            );
+
+            sendJson(
+                    exchange,
+                    200,
+                    """
+                    {"status":"ok"}
+                    """
+            );
+
+        } catch (Exception exception) {
+            sendJson(
+                    exchange,
+                    400,
+                    "{\"status\":\"error\",\"message\":\""
+                            + escapeJson(exception.getMessage())
+                            + "\"}"
+            );
+        }
+    }
+
+    /**
+     * Transport representation of a result received from a Node Agent.
+     *
+     * executionTimeMs is accepted from the HTTP payload for forward
+     * compatibility, but is not currently part of TaskResult.
+     */
+    private static class ResultBody {
+        String taskId;
+        String status;
+        String outputData;
+        long executionTimeMs;
     }
 
     private void checkStaleness() {
