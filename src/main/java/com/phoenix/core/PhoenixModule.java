@@ -13,7 +13,6 @@ import com.phoenix.scheduler.GreedyCostScheduler;
 import com.phoenix.scheduler.PlacementCostModel;
 import com.phoenix.scheduler.TaskScheduler;
 import com.phoenix.scheduler.WeightedPlacementCostModel;
-import com.phoenix.sim.NodeSimulator;
 
 /**
  * Guice wiring for Phoenix Core.
@@ -55,6 +54,5 @@ public class PhoenixModule extends AbstractModule {
         bind(DeviceRegistry.class).in(Singleton.class);
         bind(AdapterRegistry.class).in(Singleton.class);
         bind(RegistrationServer.class).in(Singleton.class);
-        bind(NodeSimulator.class).in(Singleton.class);
     }
 }

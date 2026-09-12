@@ -15,7 +15,6 @@ import com.phoenix.dispatch.TaskDispatcher;
 import com.phoenix.model.NodeRecord;
 import com.phoenix.model.TaskDescriptor;
 import com.phoenix.net.RegistrationServer;
-import com.phoenix.sim.NodeSimulator;
 
 /**
  * Phoenix Core entry point.
@@ -56,11 +55,6 @@ public class App {
         System.out.println("          POST /register");
         System.out.println("          POST /heartbeat");
         System.out.println("=========================================================");
-
-        NodeSimulator simulator =
-                injector.getInstance(NodeSimulator.class);
-
-        simulator.bootstrapDemoFleet();
 
         DeviceRegistry registry =
                 injector.getInstance(DeviceRegistry.class);
