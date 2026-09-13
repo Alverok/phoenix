@@ -1,11 +1,11 @@
 package com.phoenix.core;
 
+import java.util.Map;
+import java.util.Set;
+
 import com.google.inject.Inject;
 import com.google.inject.Singleton;
 import com.phoenix.adapter.IHardwareAdapter;
-
-import java.util.Map;
-import java.util.Set;
 
 /**
  * Resolves a node's {@code adapterType} string to the concrete

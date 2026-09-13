@@ -386,7 +386,7 @@ public class RegistrationServer {
                 // Hand-built JSON — sidesteps any Gson record-serialization surprises
                 // and matches the documented protocol shape exactly (id/type/samples).
                 String json = String.format(
-                        "{\"id\":\"%s\",\"type\":\"%s\",\"samples\":2000000}",
+                        "{\"taskId\":\"%s\",\"type\":\"%s\",\"samples\":2000000}",
                         escapeJson(descriptor.id()), escapeJson(descriptor.type()));
 
                 sendJson(exchange, 200, json);
