@@ -36,8 +36,9 @@ import com.sun.net.httpserver.HttpServer;
 @Singleton
 public class RegistrationServer {
 
-    private static final long STALE_AFTER_MS = 20_000;
+    private static final long DEGRADED_AFTER_MS = 20_000;
     private static final double UNKNOWN_CPU_FALLBACK = 50.0;
+    private static final long OFFLINE_AFTER_MS = 60_000;
 
     private final DeviceRegistry deviceRegistry;
     private final TaskQueueService taskQueue;
@@ -567,34 +568,66 @@ public class RegistrationServer {
     }
 
     private void checkStaleness() {
-        Instant now = Instant.now();
+
+        Instant now =
+                Instant.now();
 
         for (String nodeId : liveNodeIds) {
-            Instant seen = lastSeen.get(nodeId);
+
+            Instant seen =
+                    lastSeen.get(nodeId);
 
             if (seen == null) {
                 continue;
             }
 
             long ageMs =
-                    now.toEpochMilli() - seen.toEpochMilli();
+                    now.toEpochMilli()
+                            - seen.toEpochMilli();
 
-            if (ageMs <= STALE_AFTER_MS) {
-                continue;
-            }
+            deviceRegistry.get(nodeId)
+                    .ifPresent(record -> {
 
-            deviceRegistry.get(nodeId).ifPresent(record -> {
+                        if (ageMs >= OFFLINE_AFTER_MS) {
 
-                if (record.state() == NodeStatus.ONLINE) {
-                    System.out.printf(
-                            "[RegistrationServer] No heartbeat from %s in %ds -> marking DEGRADED%n",
-                            record.info().displayName(),
-                            ageMs / 1000
-                    );
+                            if (record.state()
+                                    != NodeStatus.OFFLINE) {
 
-                    deviceRegistry.markDegraded(nodeId);
-                }
-            });
+                                System.out.printf(
+                                        "[RegistrationServer] "
+                                                + "No heartbeat from %s "
+                                                + "in %ds -> OFFLINE%n",
+                                        record.info().displayName(),
+                                        ageMs / 1000
+                                );
+
+                                deviceRegistry.markOffline(
+                                        nodeId
+                                );
+                            }
+
+                            return;
+                        }
+
+                        if (ageMs >= DEGRADED_AFTER_MS) {
+
+                            if (record.state()
+                                    == NodeStatus.ONLINE) {
+
+                                System.out.printf(
+                                        "[RegistrationServer] "
+                                                + "No heartbeat from %s "
+                                                + "in %ds -> DEGRADED%n",
+                                        record.info().displayName(),
+                                        ageMs / 1000
+                                );
+
+                                deviceRegistry.markDegraded(
+                                        nodeId
+                                );
+                            }
+                        }
+                    });
         }
     }
 
