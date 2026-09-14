@@ -9,7 +9,10 @@ import com.phoenix.adapter.impl.Esp32Adapter;
 import com.phoenix.adapter.impl.LinuxAdapter;
 import com.phoenix.dispatch.TaskDispatcher;
 import com.phoenix.net.HttpNodeAgentClient;
+import com.phoenix.net.HttpPushNodeAgentClient;
 import com.phoenix.net.NodeAgentClient;
+import com.phoenix.net.PullTransport;
+import com.phoenix.net.PushTransport;
 import com.phoenix.net.RegistrationServer;
 import com.phoenix.net.TaskQueueService;
 import com.phoenix.scheduler.GreedyCostScheduler;
@@ -58,6 +61,7 @@ public class PhoenixModule extends AbstractModule {
         bind(AdapterRegistry.class).in(Singleton.class);
         bind(RegistrationServer.class).in(Singleton.class);
         bind(TaskQueueService.class).in(Singleton.class);
-        bind(NodeAgentClient.class).to(HttpNodeAgentClient.class).in(Singleton.class);
+        bind(NodeAgentClient.class).annotatedWith(PullTransport.class).to(HttpNodeAgentClient.class).in(Singleton.class);
+        bind(NodeAgentClient.class).annotatedWith(PushTransport.class).to(HttpPushNodeAgentClient.class).in(Singleton.class);
     }
 }
