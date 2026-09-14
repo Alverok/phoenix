@@ -13,6 +13,7 @@ import com.phoenix.model.NodeRecord;
 import com.phoenix.model.TaskDescriptor;
 import com.phoenix.model.TaskResult;
 import com.phoenix.scheduler.TaskScheduler;
+import com.phoenix.tui.TaskJournal;
 
 @Singleton
 public class TaskDispatcher {
@@ -20,37 +21,94 @@ public class TaskDispatcher {
     private final DeviceRegistry registry;
     private final TaskScheduler scheduler;
     private final AdapterRegistry adapterRegistry;
+    private final TaskJournal taskJournal;
 
     @Inject
-    public TaskDispatcher(DeviceRegistry registry, TaskScheduler scheduler, AdapterRegistry adapterRegistry) {
+    public TaskDispatcher(
+            DeviceRegistry registry,
+            TaskScheduler scheduler,
+            AdapterRegistry adapterRegistry,
+            TaskJournal taskJournal) {
+
         this.registry = registry;
         this.scheduler = scheduler;
         this.adapterRegistry = adapterRegistry;
+        this.taskJournal = taskJournal;
     }
 
-    public DispatchResult dispatch(TaskDescriptor task) {
-        System.out.printf("[Dispatcher] Task submitted: id=%s type=%s%n", task.id(), task.type());
+    public DispatchResult dispatch(
+            TaskDescriptor task) {
 
-        List<NodeRecord> candidates = registry.listSchedulable();
-        Optional<NodeRecord> selected = scheduler.selectNode(task, candidates);
+        taskJournal.submitted(task);
 
-        NodeRecord node = selected.orElseThrow(() -> new NoEligibleNodeException(task.id()));
+        System.out.printf(
+                "[Dispatcher] Task submitted: id=%s type=%s%n",
+                task.id(),
+                task.type()
+        );
 
-        IHardwareAdapter adapter = adapterRegistry.resolve(node.info().adapterType());
+        List<NodeRecord> candidates =
+                registry.listSchedulable();
 
-        NodeExecutionTarget target = new NodeExecutionTarget(
-                node.nodeId(),
-                node.info().displayName(),
-                node.info().adapterType());
+        Optional<NodeRecord> selected =
+                scheduler.selectNode(
+                        task,
+                        candidates
+                );
 
-        System.out.printf("[Dispatcher] Resolved adapter '%s' for node %s (id=%s)%n",
-                target.adapterType(), target.displayName(), target.nodeId());
+        NodeRecord node =
+                selected.orElseThrow(
+                        () -> new NoEligibleNodeException(
+                                task.id()
+                        )
+                );
 
-        TaskResult result = adapter.executeTask(task, target);
+        taskJournal.assigned(
+                task.id(),
+                node.info().displayName()
+        );
+
+        IHardwareAdapter adapter =
+                adapterRegistry.resolve(
+                        node.info().adapterType()
+                );
+
+        NodeExecutionTarget target =
+                new NodeExecutionTarget(
+                        node.nodeId(),
+                        node.info().displayName(),
+                        node.info().adapterType()
+                );
+
+        System.out.printf(
+                "[Dispatcher] Resolved adapter '%s' for node %s (id=%s)%n",
+                target.adapterType(),
+                target.displayName(),
+                target.nodeId()
+        );
+
+        TaskResult result =
+                adapter.executeTask(
+                        task,
+                        target
+                );
+
         adapter.reportResult(result);
 
-        System.out.printf("[Dispatcher] Task completed: status=%s%n", result.status());
+        taskJournal.completed(
+                task.id(),
+                result
+        );
 
-        return new DispatchResult(node.nodeId(), node.info().displayName(), result);
+        System.out.printf(
+                "[Dispatcher] Task completed: status=%s%n",
+                result.status()
+        );
+
+        return new DispatchResult(
+                node.nodeId(),
+                node.info().displayName(),
+                result
+        );
     }
 }

@@ -19,6 +19,9 @@ import com.phoenix.scheduler.GreedyCostScheduler;
 import com.phoenix.scheduler.PlacementCostModel;
 import com.phoenix.scheduler.TaskScheduler;
 import com.phoenix.scheduler.WeightedPlacementCostModel;
+import com.phoenix.tui.PhoenixEventLog;
+import com.phoenix.tui.PhoenixTui;
+import com.phoenix.tui.TaskJournal;
 
 /**
  * Guice wiring for Phoenix Core.
@@ -56,7 +59,9 @@ public class PhoenixModule extends AbstractModule {
         // in dispatch/ or core/ needs to know.
         bind(TaskScheduler.class).to(GreedyCostScheduler.class).in(Singleton.class);
         bind(PlacementCostModel.class).to(WeightedPlacementCostModel.class).in(Singleton.class);
-
+        bind(PhoenixEventLog.class).in(Singleton.class);
+        bind(TaskJournal.class).in(Singleton.class);
+        bind(PhoenixTui.class).in(Singleton.class);
         bind(DeviceRegistry.class).in(Singleton.class);
         bind(AdapterRegistry.class).in(Singleton.class);
         bind(RegistrationServer.class).in(Singleton.class);
