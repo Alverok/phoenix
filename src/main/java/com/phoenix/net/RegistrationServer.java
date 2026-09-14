@@ -52,6 +52,9 @@ public class RegistrationServer {
     private final Set<String> liveNodeIds =
             ConcurrentHashMap.newKeySet();
 
+    private final Map<String, String> callbackAddressByNodeId =
+        new ConcurrentHashMap<>();
+
     private HttpServer server;
 
     @Inject
@@ -114,6 +117,12 @@ public class RegistrationServer {
                 .findFirst();
     }
 
+    public Optional<String> callbackAddressForNode(String nodeId) {
+        return Optional.ofNullable(
+            callbackAddressByNodeId.get(nodeId)
+    );
+}
+
     private void handleRegister(HttpExchange exchange) throws IOException {
         if (!"POST".equalsIgnoreCase(exchange.getRequestMethod())) {
             sendJson(
@@ -144,6 +153,13 @@ public class RegistrationServer {
                             existingNodeId
                     );
                 });
+
+                // ADDED: refresh callback address when an existing device reconnects.
+                storeCallbackAddressIfPresent(
+                        announcement,
+                        existingNodeId,
+                        exchange
+                );
 
                 sendJson(
                         exchange,
@@ -189,6 +205,13 @@ public class RegistrationServer {
             liveNodeIds.add(nodeInfo.nodeId());
             lastSeen.put(nodeInfo.nodeId(), Instant.now());
 
+            // ADDED: remember where this node can receive pushed tasks.
+            storeCallbackAddressIfPresent(
+                    announcement,
+                    nodeInfo.nodeId(),
+                    exchange
+            );
+
             String remoteAddress =
                     exchange.getRemoteAddress()
                             .getAddress()
@@ -224,6 +247,33 @@ public class RegistrationServer {
             );
         }
     }
+
+    private void storeCallbackAddressIfPresent(
+        DeviceAnnouncement announcement,
+        String nodeId,
+        HttpExchange exchange) {
+
+    if (announcement.callbackPort == null) {
+        return;
+    }
+
+    String host =
+            exchange.getRemoteAddress()
+                    .getAddress()
+                    .getHostAddress();
+
+    callbackAddressByNodeId.put(
+            nodeId,
+            host + ":" + announcement.callbackPort
+    );
+
+    System.out.printf(
+            "[RegistrationServer] Node %s reachable for push at %s:%d%n",
+            nodeId,
+            host,
+            announcement.callbackPort
+    );
+}
 
     private void handleHeartbeat(HttpExchange exchange) throws IOException {
         if (!"POST".equalsIgnoreCase(exchange.getRequestMethod())) {

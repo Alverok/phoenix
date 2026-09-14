@@ -20,4 +20,5 @@ public class DeviceAnnouncement {
     public long memoryMb;
     public String adapterType;
     public Set<String> capabilities;
+    public Integer callbackPort; // null for pull-based agents (Android)
 }

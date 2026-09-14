@@ -1,35 +1,32 @@
 package com.phoenix.adapter.impl;
 
-import java.util.Set;
-
+import com.google.inject.Inject;
 import com.phoenix.adapter.IHardwareAdapter;
-import com.phoenix.model.HardwareClass;
 import com.phoenix.model.NodeExecutionTarget;
-import com.phoenix.model.NodeInfo;
-import com.phoenix.model.ResourceStatus;
 import com.phoenix.model.TaskDescriptor;
 import com.phoenix.model.TaskResult;
+import com.phoenix.net.NodeAgentClient;
+import com.phoenix.net.PushTransport;
 
+/**
+ * Linux nodes are directly addressable on the LAN, so Phoenix pushes tasks
+ * to them (@PushTransport) rather than making them poll like Android does.
+ * The adapter itself is transport-agnostic — it just calls execute();
+ * PhoenixModule decides which transport implementation this is.
+ */
 public class LinuxAdapter implements IHardwareAdapter {
 
-    @Override
-    public NodeInfo registerNode() {
-        System.out.println("[LinuxAdapter] Providing Linux capability template...");
-        return new NodeInfo(
-                "template", "Linux-node", HardwareClass.LINUX, "x86_64",
-                8, 16_384, "linux", Set.of());
-    }
+    private final NodeAgentClient client;
 
-    @Override
-    public ResourceStatus getResourceStatus() {
-        return ResourceStatus.of(15.5, 8192, 2, 0, 8.0, 4.5);
+    @Inject
+    public LinuxAdapter(@PushTransport NodeAgentClient client) {
+        this.client = client;
     }
 
     @Override
     public TaskResult executeTask(TaskDescriptor task, NodeExecutionTarget target) {
-        System.out.printf("[LinuxAdapter] Executing task %s on node %s (%s)%n",
-                task.id(), target.displayName(), target.nodeId());
-        return new TaskResult(task.id(), "SUCCESS", "Computed Monte-Carlo pi ~= 3.14159");
+        System.out.printf("[LinuxAdapter] Pushing %s to real node %s%n", task.id(), target.displayName());
+        return client.execute(target, task);
     }
 
     @Override
