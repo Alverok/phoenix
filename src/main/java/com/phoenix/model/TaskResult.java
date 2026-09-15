@@ -1,18 +1,85 @@
 package com.phoenix.model;
 
+import java.util.Objects;
+
 /**
- * Outcome of a task after it has run on a node, returned to the
- * Task Dispatcher / Result Aggregator.
+ * Result of one task execution attempt.
  *
- * <p>Unchanged from Day 1 on purpose: {@link com.phoenix.adapter.IHardwareAdapter}
- * is a capability contract, not a per-node one, so it has no business knowing
- * which physical node instance it's being called on behalf of. "Which node
- * ran this?" is dispatch-level context, not adapter-level context — see
- * {@link com.phoenix.dispatch.DispatchResult}, which wraps a TaskResult
- * together with the nodeId that produced it.
+ * <p>The four-argument form carries explicit failure semantics.
+ * The three-argument constructor is retained for compatibility with
+ * existing callers.
  */
 public record TaskResult(
         String taskId,
         String status,
-        String outputData
-) {}
+        String outputData,
+        TaskFailureReason failureReason
+) {
+
+    /**
+     * Backward-compatible constructor.
+     *
+     * <p>Successful results are assigned NONE. Any generic failure created
+     * through this constructor is classified as EXECUTION_ERROR because
+     * the caller has not provided enough information to blame the transport
+     * or node.
+     */
+    public TaskResult(
+            String taskId,
+            String status,
+            String outputData) {
+
+        this(
+                taskId,
+                status,
+                outputData,
+                "SUCCESS".equalsIgnoreCase(status)
+                        ? TaskFailureReason.NONE
+                        : TaskFailureReason.EXECUTION_ERROR
+        );
+    }
+
+    public TaskResult {
+
+        Objects.requireNonNull(
+                taskId,
+                "taskId"
+        );
+
+        Objects.requireNonNull(
+                status,
+                "status"
+        );
+
+        Objects.requireNonNull(
+                failureReason,
+                "failureReason"
+        );
+    }
+
+    public boolean isSuccess() {
+        return "SUCCESS".equalsIgnoreCase(
+                status
+        );
+    }
+
+    /**
+     * Whether this failure represents an infrastructure problem for which
+     * retrying the task elsewhere is meaningful.
+     */
+    public boolean isRetryable() {
+
+        return switch (failureReason) {
+
+            case TIMEOUT,
+                 NODE_UNREACHABLE,
+                 TRANSPORT_ERROR,
+                 NODE_OFFLINE ->
+                    true;
+
+            case NONE,
+                 EXECUTION_ERROR ->
+                    false;
+        };
+    }
+}

@@ -15,6 +15,7 @@ import com.phoenix.net.PullTransport;
 import com.phoenix.net.PushTransport;
 import com.phoenix.net.RegistrationServer;
 import com.phoenix.net.TaskQueueService;
+import com.phoenix.recovery.TaskRecoveryManager;
 import com.phoenix.scheduler.GreedyCostScheduler;
 import com.phoenix.scheduler.PlacementCostModel;
 import com.phoenix.scheduler.TaskScheduler;
@@ -68,5 +69,6 @@ public class PhoenixModule extends AbstractModule {
         bind(TaskQueueService.class).in(Singleton.class);
         bind(NodeAgentClient.class).annotatedWith(PullTransport.class).to(HttpNodeAgentClient.class).in(Singleton.class);
         bind(NodeAgentClient.class).annotatedWith(PushTransport.class).to(HttpPushNodeAgentClient.class).in(Singleton.class);
+        bind(TaskRecoveryManager.class).in(Singleton.class);
     }
 }

@@ -1,24 +1,28 @@
 package com.phoenix.tui;
 
-import com.google.inject.Singleton;
-import com.phoenix.model.TaskDescriptor;
-import com.phoenix.model.TaskResult;
-
 import java.time.Duration;
 import java.time.Instant;
-import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
 
+import com.google.inject.Singleton;
+import com.phoenix.model.TaskDescriptor;
+import com.phoenix.model.TaskResult;
+
+/**
+ * In-memory task history used by the Phoenix TUI.
+ */
 @Singleton
 public class TaskJournal {
 
     private final Map<String, TaskState> tasks =
             new ConcurrentHashMap<>();
 
-    public void submitted(TaskDescriptor task) {
+    public void submitted(
+            TaskDescriptor task) {
+
         tasks.put(
                 task.id(),
                 new TaskState(
@@ -28,6 +32,8 @@ public class TaskJournal {
                         "SUBMITTED",
                         Instant.now(),
                         null,
+                        null,
+                        1,
                         null
                 )
         );
@@ -40,7 +46,26 @@ public class TaskJournal {
         tasks.computeIfPresent(
                 taskId,
                 (ignored, state) ->
-                        state.withAssignment(nodeName)
+                        state.withAssignment(
+                                nodeName
+                        )
+        );
+    }
+
+    public void retrying(
+            String taskId,
+            String nodeName,
+            int attempt,
+            String reason) {
+
+        tasks.computeIfPresent(
+                taskId,
+                (ignored, state) ->
+                        state.withRetry(
+                                nodeName,
+                                attempt,
+                                reason
+                        )
         );
     }
 
@@ -52,13 +77,15 @@ public class TaskJournal {
                 taskId,
                 (ignored, state) ->
                         state.withResult(
-                                result.status(),
+                                result,
                                 Instant.now()
                         )
         );
     }
 
-    public List<TaskState> recent(int limit) {
+    public List<TaskState> recent(
+            int limit) {
+
         return tasks.values()
                 .stream()
                 .sorted(
@@ -77,10 +104,14 @@ public class TaskJournal {
             String status,
             Instant submittedAt,
             Instant completedAt,
-            String output
+            String output,
+            int attempt,
+            String failureReason
     ) {
 
-        TaskState withAssignment(String node) {
+        TaskState withAssignment(
+                String node) {
+
             return new TaskState(
                     taskId,
                     type,
@@ -88,26 +119,49 @@ public class TaskJournal {
                     "RUNNING",
                     submittedAt,
                     completedAt,
-                    output
+                    output,
+                    attempt,
+                    failureReason
+            );
+        }
+
+        TaskState withRetry(
+                String node,
+                int nextAttempt,
+                String reason) {
+
+            return new TaskState(
+                    taskId,
+                    type,
+                    node,
+                    "RETRYING",
+                    submittedAt,
+                    completedAt,
+                    output,
+                    nextAttempt,
+                    reason
             );
         }
 
         TaskState withResult(
-                String finalStatus,
+                TaskResult result,
                 Instant completedAt) {
 
             return new TaskState(
                     taskId,
                     type,
                     nodeName,
-                    finalStatus,
+                    result.status(),
                     submittedAt,
                     completedAt,
-                    output
+                    result.outputData(),
+                    attempt,
+                    result.failureReason().name()
             );
         }
 
         public long elapsedMs() {
+
             Instant end =
                     completedAt != null
                             ? completedAt
