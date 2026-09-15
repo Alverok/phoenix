@@ -17,18 +17,24 @@ public class PhoenixEventLog {
     private static final DateTimeFormatter TIME =
             DateTimeFormatter.ofPattern("HH:mm:ss");
 
-    private final Deque<String> lines = new ArrayDeque<>();
+    private final Deque<String> lines =
+            new ArrayDeque<>();
 
-    public synchronized void append(String line) {
+    public synchronized void append(
+            String line) {
 
         if (line == null || line.isBlank()) {
             return;
         }
 
-        String normalized = line.strip();
+        String normalized =
+                line.strip();
 
         lines.addLast(
-                "[" + LocalTime.now().format(TIME) + "] " + normalized
+                "["
+                        + LocalTime.now().format(TIME)
+                        + "] "
+                        + normalized
         );
 
         while (lines.size() > MAX_LINES) {
@@ -36,7 +42,8 @@ public class PhoenixEventLog {
         }
     }
 
-    public synchronized List<String> recent(int limit) {
+    public synchronized List<String> recent(
+            int limit) {
 
         List<String> snapshot =
                 new ArrayList<>(lines);

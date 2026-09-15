@@ -544,16 +544,35 @@ public class PhoenixTui {
                 break;
             }
 
+            String displayStatus =
+                    switch (task.status()) {
+
+                        case "RETRYING" ->
+                                "RETRY " + task.attempt();
+
+                        default ->
+                                task.status();
+                    };
+
             TextColor statusColor =
-                    "SUCCESS".equals(
-                            task.status()
-                    )
-                            ? TextColor.ANSI.GREEN
-                            : "FAILED".equals(
-                            task.status()
-                    )
-                            ? TextColor.ANSI.RED
-                            : TextColor.ANSI.YELLOW;
+                    switch (task.status()) {
+
+                        case "SUCCESS" ->
+                                TextColor.ANSI.GREEN;
+
+                        case "FAILED" ->
+                                TextColor.ANSI.RED;
+
+                        case "RETRYING" ->
+                                TextColor.ANSI.YELLOW;
+
+                        case "RUNNING",
+                             "SUBMITTED" ->
+                                TextColor.ANSI.CYAN;
+
+                        default ->
+                                TextColor.ANSI.WHITE;
+                    };
 
             g.setForegroundColor(
                     statusColor
@@ -563,9 +582,9 @@ public class PhoenixTui {
                     x + 2,
                     row,
                     String.format(
-                            "%-9s %-10s",
+                            "%-11s %-18s",
                             task.taskId(),
-                            task.status()
+                            displayStatus
                     )
             );
 
@@ -574,7 +593,7 @@ public class PhoenixTui {
             );
 
             g.putString(
-                    x + 24,
+                    x + 22,
                     row,
                     truncate(
                             task.nodeName() == null
@@ -585,7 +604,7 @@ public class PhoenixTui {
             );
 
             g.putString(
-                    x + 44,
+                    x + 42,
                     row,
                     String.format(
                             "%5dms",
@@ -630,7 +649,8 @@ public class PhoenixTui {
                         )
                 );
 
-        int row = y + 3;
+        int row =
+                y + 3;
 
         for (String event : events) {
 
@@ -639,19 +659,19 @@ public class PhoenixTui {
             }
 
             g.setForegroundColor(
-                    TextColor.ANSI.WHITE
+                    event.contains("FAILED")
+                            ? TextColor.ANSI.RED
+                            : event.contains("DEGRADED")
+                            ? TextColor.ANSI.YELLOW
+                            : event.contains("SUCCESS")
+                            ? TextColor.ANSI.GREEN
+                            : TextColor.ANSI.WHITE
             );
 
             g.putString(
                     x + 2,
                     row,
-                    truncate(
-                            event,
-                            Math.max(
-                                    1,
-                                    width - 4
-                            )
-                    )
+                    event
             );
 
             row++;
