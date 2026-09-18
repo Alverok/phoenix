@@ -1,13 +1,7 @@
 package com.phoenix.model;
 
-import java.util.Objects;
-
 /**
- * Result of one task execution attempt.
- *
- * <p>The four-argument form carries explicit failure semantics.
- * The three-argument constructor is retained for compatibility with
- * existing callers.
+ * Outcome of one execution attempt.
  */
 public record TaskResult(
         String taskId,
@@ -16,19 +10,11 @@ public record TaskResult(
         TaskFailureReason failureReason
 ) {
 
-    /**
-     * Backward-compatible constructor.
-     *
-     * <p>Successful results are assigned NONE. Any generic failure created
-     * through this constructor is classified as EXECUTION_ERROR because
-     * the caller has not provided enough information to blame the transport
-     * or node.
-     */
+    /** Backward-compatible constructor used by existing agents/transports. */
     public TaskResult(
             String taskId,
             String status,
             String outputData) {
-
         this(
                 taskId,
                 status,
@@ -39,47 +25,19 @@ public record TaskResult(
         );
     }
 
-    public TaskResult {
-
-        Objects.requireNonNull(
-                taskId,
-                "taskId"
-        );
-
-        Objects.requireNonNull(
-                status,
-                "status"
-        );
-
-        Objects.requireNonNull(
-                failureReason,
-                "failureReason"
-        );
-    }
-
     public boolean isSuccess() {
-        return "SUCCESS".equalsIgnoreCase(
-                status
-        );
+        return "SUCCESS".equalsIgnoreCase(status);
     }
 
-    /**
-     * Whether this failure represents an infrastructure problem for which
-     * retrying the task elsewhere is meaningful.
-     */
     public boolean isRetryable() {
-
         return switch (failureReason) {
-
             case TIMEOUT,
                  NODE_UNREACHABLE,
                  TRANSPORT_ERROR,
-                 NODE_OFFLINE ->
-                    true;
-
+                 NODE_OFFLINE -> true;
             case NONE,
-                 EXECUTION_ERROR ->
-                    false;
+                 EXECUTION_ERROR,
+                 NO_ELIGIBLE_NODE -> false;
         };
     }
 }

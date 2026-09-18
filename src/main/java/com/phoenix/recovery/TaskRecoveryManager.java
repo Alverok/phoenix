@@ -13,81 +13,41 @@ import com.phoenix.model.TaskResult;
 import com.phoenix.scheduler.TaskScheduler;
 
 /**
- * Recovery policy for failed execution attempts.
- *
- * <p>This component decides whether a failure is retryable and asks the
- * existing scheduler to choose an alternative node. It does not execute
- * tasks and does not know about concrete adapters or transports.
+ * Recovery policy and alternate-node selection for failed attempts.
+ * The dispatcher owns execution; this component owns retry policy.
  */
 @Singleton
 public class TaskRecoveryManager {
 
     private final DeviceRegistry registry;
     private final TaskScheduler scheduler;
-
     private final int maxAttempts;
 
     @Inject
     public TaskRecoveryManager(
             DeviceRegistry registry,
             TaskScheduler scheduler) {
-
-        this.registry =
-                registry;
-
-        this.scheduler =
-                scheduler;
-
-        this.maxAttempts =
-                Integer.getInteger(
-                        "phoenix.maxAttempts",
-                        3
-                );
+        this.registry = registry;
+        this.scheduler = scheduler;
+        this.maxAttempts = Integer.getInteger("phoenix.maxAttempts", 3);
     }
 
     public int maxAttempts() {
         return maxAttempts;
     }
 
-    /**
-     * Infrastructure failures are retryable.
-     *
-     * <p>Ordinary task execution errors are deliberately not retried
-     * automatically.
-     */
-    public boolean isRecoverable(
-            TaskResult result) {
-
-        return result != null
-                && result.isRetryable();
+    public boolean isRetryable(TaskResult result) {
+        return result != null && result.isRetryable();
     }
 
-    /**
-     * Ask the normal scheduler to select another currently schedulable
-     * node while excluding nodes that already failed this logical task.
-     */
     public Optional<NodeRecord> chooseAlternative(
             TaskDescriptor task,
             Set<String> excludedNodeIds) {
 
-        List<NodeRecord> candidates =
-                registry.listSchedulable()
-                        .stream()
-                        .filter(
-                                node ->
-                                        !excludedNodeIds.contains(
-                                                node.nodeId()
-                                        )
-                        )
-                        .toList();
+        List<NodeRecord> candidates = registry.listSchedulable().stream()
+                .filter(node -> !excludedNodeIds.contains(node.nodeId()))
+                .toList();
 
-        if (candidates.isEmpty()) {
-            return Optional.empty();
-        }
-
-        return scheduler.selectNode(
-                task,
-                candidates
-        );
+        return scheduler.selectNode(task, candidates);
     }
 }

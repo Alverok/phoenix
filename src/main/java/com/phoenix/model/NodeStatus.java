@@ -18,10 +18,10 @@ public enum NodeStatus {
     NEW,
     /** Enrollment in progress (identity being assigned/confirmed). */
     REGISTERING,
-    /** Node is registered and heartbeating normally. */
+    /** Node is registered and heartbeating normally; eligible for new work. */
     ONLINE,
-    /** Node is reachable but showing signs of trouble (missed heartbeats,
-     *  high load) — still schedulable but penalized by the cost model. */
+    /** Node is known but health is uncertain; retained for recovery but not
+     *  eligible for new work until a heartbeat restores ONLINE state. */
     DEGRADED,
     /** Node has not been heard from within the failure window and is not
      *  eligible for scheduling. */

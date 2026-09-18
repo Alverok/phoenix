@@ -7,6 +7,8 @@ import com.phoenix.adapter.IHardwareAdapter;
 import com.phoenix.adapter.impl.AndroidAdapter;
 import com.phoenix.adapter.impl.Esp32Adapter;
 import com.phoenix.adapter.impl.LinuxAdapter;
+import com.phoenix.dispatch.PendingTaskQueue;
+import com.phoenix.dispatch.PendingTaskScheduler;
 import com.phoenix.dispatch.TaskDispatcher;
 import com.phoenix.net.HttpNodeAgentClient;
 import com.phoenix.net.HttpPushNodeAgentClient;
@@ -70,5 +72,7 @@ public class PhoenixModule extends AbstractModule {
         bind(NodeAgentClient.class).annotatedWith(PullTransport.class).to(HttpNodeAgentClient.class).in(Singleton.class);
         bind(NodeAgentClient.class).annotatedWith(PushTransport.class).to(HttpPushNodeAgentClient.class).in(Singleton.class);
         bind(TaskRecoveryManager.class).in(Singleton.class);
+        bind(PendingTaskQueue.class).in(Singleton.class);
+        bind(PendingTaskScheduler.class).in(Singleton.class);
     }
 }

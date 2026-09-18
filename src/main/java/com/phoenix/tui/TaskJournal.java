@@ -11,18 +11,13 @@ import com.google.inject.Singleton;
 import com.phoenix.model.TaskDescriptor;
 import com.phoenix.model.TaskResult;
 
-/**
- * In-memory task history used by the Phoenix TUI.
- */
 @Singleton
 public class TaskJournal {
 
     private final Map<String, TaskState> tasks =
             new ConcurrentHashMap<>();
 
-    public void submitted(
-            TaskDescriptor task) {
-
+    public void submitted(TaskDescriptor task) {
         tasks.put(
                 task.id(),
                 new TaskState(
@@ -46,9 +41,18 @@ public class TaskJournal {
         tasks.computeIfPresent(
                 taskId,
                 (ignored, state) ->
-                        state.withAssignment(
-                                nodeName
-                        )
+                        state.withAssignment(nodeName)
+        );
+    }
+
+    public void waiting(
+            String taskId,
+            String reason) {
+
+        tasks.computeIfPresent(
+                taskId,
+                (ignored, state) ->
+                        state.withWaiting(reason)
         );
     }
 
@@ -83,9 +87,7 @@ public class TaskJournal {
         );
     }
 
-    public List<TaskState> recent(
-            int limit) {
-
+    public List<TaskState> recent(int limit) {
         return tasks.values()
                 .stream()
                 .sorted(
@@ -109,19 +111,31 @@ public class TaskJournal {
             String failureReason
     ) {
 
-        TaskState withAssignment(
-                String node) {
-
+        TaskState withAssignment(String node) {
             return new TaskState(
                     taskId,
                     type,
                     node,
                     "RUNNING",
                     submittedAt,
-                    completedAt,
+                    null,
                     output,
                     attempt,
                     failureReason
+            );
+        }
+
+        TaskState withWaiting(String reason) {
+            return new TaskState(
+                    taskId,
+                    type,
+                    nodeName,
+                    "WAITING",
+                    submittedAt,
+                    null,
+                    output,
+                    attempt,
+                    reason
             );
         }
 
@@ -129,14 +143,13 @@ public class TaskJournal {
                 String node,
                 int nextAttempt,
                 String reason) {
-
             return new TaskState(
                     taskId,
                     type,
                     node,
                     "RETRYING",
                     submittedAt,
-                    completedAt,
+                    null,
                     output,
                     nextAttempt,
                     reason
@@ -146,7 +159,6 @@ public class TaskJournal {
         TaskState withResult(
                 TaskResult result,
                 Instant completedAt) {
-
             return new TaskState(
                     taskId,
                     type,
@@ -161,7 +173,6 @@ public class TaskJournal {
         }
 
         public long elapsedMs() {
-
             Instant end =
                     completedAt != null
                             ? completedAt

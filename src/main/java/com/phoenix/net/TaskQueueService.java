@@ -1,192 +1,147 @@
 package com.phoenix.net;
 
+import java.time.Duration;
 import java.util.Map;
 import java.util.Optional;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.LinkedBlockingQueue;
+import java.util.concurrent.TimeUnit;
 
 import com.google.inject.Singleton;
 import com.phoenix.model.TaskDescriptor;
 import com.phoenix.model.TaskResult;
 
 /**
- * In-memory task queues for pull-based Node Agents.
+ * Per-device transport queues for pull-based node agents.
  *
- * <p>Each device gets its own queue. A task result is correlated back to
- * the dispatcher using taskId.
+ * <p>This is deliberately not Phoenix's logical work queue. A logical task
+ * can leave this queue when a node polls; if execution later fails, recovery
+ * is handled by PendingTaskQueue/TaskDispatcher.
  */
 @Singleton
 public class TaskQueueService {
 
     private final Map<String, LinkedBlockingQueue<TaskDescriptor>>
-            queuesByDeviceId =
-            new ConcurrentHashMap<>();
+            queuesByDeviceId = new ConcurrentHashMap<>();
 
     private final Map<String, CompletableFuture<TaskResult>>
-            pendingResultsByTaskId =
-            new ConcurrentHashMap<>();
+            pendingResults = new ConcurrentHashMap<>();
 
-    /**
-     * Submit work to a node's queue and return a future that will be
-     * completed when POST /results arrives.
-     */
-    public CompletableFuture<TaskResult> submit(
+    public void submit(
             String deviceId,
             TaskDescriptor task) {
 
-        LinkedBlockingQueue<TaskDescriptor> queue =
-                queuesByDeviceId.computeIfAbsent(
-                        deviceId,
-                        ignored ->
-                                new LinkedBlockingQueue<>()
-                );
-
-        CompletableFuture<TaskResult> resultFuture =
-                new CompletableFuture<>();
-
-        pendingResultsByTaskId.put(
+        // Install the future before making the task visible to the agent.
+        pendingResults.put(
                 task.id(),
-                resultFuture
+                new CompletableFuture<>()
         );
 
-        queue.offer(task);
+        queuesByDeviceId
+                .computeIfAbsent(
+                        deviceId,
+                        ignored -> new LinkedBlockingQueue<>()
+                )
+                .offer(task);
 
         System.out.printf(
-                "[TaskQueueService] SUBMIT key='%s' task=%s%n",
-                deviceId,
-                task.id()
+                "[TaskQueueService] queued %s for device %s%n",
+                task.id(),
+                deviceId
         );
-
-        return resultFuture;
     }
 
-    /**
-     * Poll one task for a specific device.
-     */
     public Optional<TaskDescriptor> poll(
             String deviceId) {
 
         LinkedBlockingQueue<TaskDescriptor> queue =
-                queuesByDeviceId.get(
-                        deviceId
-                );
+                queuesByDeviceId.get(deviceId);
 
         if (queue == null) {
             return Optional.empty();
         }
 
-        TaskDescriptor task =
-                queue.poll();
-
-        return Optional.ofNullable(task);
+        return Optional.ofNullable(queue.poll());
     }
 
     /**
-     * Complete the future belonging to a task result.
-     *
-     * @return true when the task was known to Phoenix.
-     */
-    public boolean completeResult(
-            TaskResult result) {
-
-        CompletableFuture<TaskResult> future =
-                pendingResultsByTaskId.remove(
-                        result.taskId()
-                );
-
-        if (future == null) {
-            return false;
-        }
-
-        future.complete(result);
-
-        return true;
-    }
-
-    /**
-     * Remove a task that has not yet been pulled by its node.
-     *
-     * <p>If the task is still waiting in the queue, its pending future is
-     * also removed because that execution attempt has timed out.
-     *
-     * @return true when the task was actually removed from a queue.
+     * Remove a task if it is still waiting in a pull-node transport queue.
+     * If the node has already pulled it, this returns false and the in-flight
+     * execution is allowed to finish harmlessly.
      */
     public boolean cancelQueuedTask(
             String deviceId,
             String taskId) {
 
         LinkedBlockingQueue<TaskDescriptor> queue =
-                queuesByDeviceId.get(
-                        deviceId
-                );
+                queuesByDeviceId.get(deviceId);
 
         if (queue == null) {
             return false;
         }
 
-        boolean removed =
-                queue.removeIf(
-                        task ->
-                                task.id().equals(taskId)
-                );
+        boolean removed = queue.removeIf(
+                task -> task.id().equals(taskId)
+        );
 
         if (removed) {
-
-            pendingResultsByTaskId.remove(
-                    taskId
-            );
-
+            pendingResults.remove(taskId);
             System.out.printf(
-                    "[TaskQueueService] CANCEL key='%s' task=%s%n",
-                    deviceId,
-                    taskId
+                    "[TaskQueueService] removed stale queued task %s from %s%n",
+                    taskId,
+                    deviceId
             );
         }
 
         return removed;
     }
 
-    /**
-     * Number of queued tasks for one node.
-     */
-    public int queueLength(
-            String deviceId) {
+    public boolean completeResult(
+            TaskResult result) {
 
-        LinkedBlockingQueue<TaskDescriptor> queue =
-                queuesByDeviceId.get(
-                        deviceId
-                );
+        CompletableFuture<TaskResult> future =
+                pendingResults.get(result.taskId());
 
-        return queue == null
-                ? 0
-                : queue.size();
-    }
-
-    /**
-     * Whether Phoenix currently has a pending result waiter for a task.
-     */
-    public boolean hasPendingResult(
-            String taskId) {
-
-        return pendingResultsByTaskId.containsKey(
-                taskId
-        );
-    }
-
-    /**
-     * Remove all queued work belonging to a device.
-     */
-    public void clearDeviceQueue(
-            String deviceId) {
-
-        LinkedBlockingQueue<TaskDescriptor> queue =
-                queuesByDeviceId.get(
-                        deviceId
-                );
-
-        if (queue != null) {
-            queue.clear();
+        if (future == null || future.isDone()) {
+            System.out.printf(
+                    "[TaskQueueService] dropping stale result for %s%n",
+                    result.taskId()
+            );
+            return false;
         }
+
+        future.complete(result);
+        return true;
+    }
+
+    public TaskResult awaitResult(
+            String taskId,
+            Duration timeout) throws Exception {
+
+        CompletableFuture<TaskResult> future =
+                pendingResults.get(taskId);
+
+        if (future == null) {
+            throw new IllegalStateException(
+                    "No pending task: " + taskId
+            );
+        }
+
+        try {
+            return future.get(
+                    timeout.toMillis(),
+                    TimeUnit.MILLISECONDS
+            );
+        } finally {
+            pendingResults.remove(taskId, future);
+        }
+    }
+
+    public int queueLength(String deviceId) {
+        LinkedBlockingQueue<TaskDescriptor> queue =
+                queuesByDeviceId.get(deviceId);
+
+        return queue == null ? 0 : queue.size();
     }
 }

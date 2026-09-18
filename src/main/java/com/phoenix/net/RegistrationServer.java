@@ -37,7 +37,6 @@ import com.sun.net.httpserver.HttpServer;
 public class RegistrationServer {
 
     private static final long DEGRADED_AFTER_MS = 20_000;
-    private static final double UNKNOWN_CPU_FALLBACK = 50.0;
     private static final long OFFLINE_AFTER_MS = 60_000;
 
     private final DeviceRegistry deviceRegistry;
@@ -173,7 +172,7 @@ public class RegistrationServer {
             }
 
             ResourceStatus initialStatus = ResourceStatus.of(
-                    UNKNOWN_CPU_FALLBACK,
+                    -1.0,
                     0,
                     0,
                     0,
@@ -315,13 +314,13 @@ public class RegistrationServer {
                 return;
             }
 
-            double effectiveCpu =
-                    heartbeat.cpuUsagePercent >= 0
-                            ? heartbeat.cpuUsagePercent
-                            : UNKNOWN_CPU_FALLBACK;
+            // Keep an unknown Android CPU value as unknown (-1) rather than
+            // inventing a 50% utilization figure. The cost model handles the
+            // unknown signal explicitly.
+            double cpuUsage = heartbeat.cpuUsagePercent;
 
             ResourceStatus status = ResourceStatus.of(
-                    effectiveCpu,
+                    cpuUsage,
                     heartbeat.availableRamMb,
                     heartbeat.activeTasks,
                     heartbeat.queueLength,
@@ -367,7 +366,7 @@ public class RegistrationServer {
                                     "%.1f%%",
                                     heartbeat.cpuUsagePercent
                             )
-                            : "N/A (assumed 50% for scheduling)",
+                            : "N/A",
                     heartbeat.availableRamMb
             );
 
@@ -424,6 +423,12 @@ public class RegistrationServer {
                 String nodeId = nodeIdByDeviceId.get(deviceId);
                 if (nodeId == null) {
                 sendJson(exchange, 404, "{\"status\":\"error\",\"message\":\"unknown_device\"}");
+                return;
+                }
+
+                Optional<NodeRecord> record = deviceRegistry.get(nodeId);
+                if (record.isEmpty() || record.get().state() != NodeStatus.ONLINE) {
+                exchange.sendResponseHeaders(204, -1);
                 return;
                 }
 
