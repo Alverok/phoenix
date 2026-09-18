@@ -4,11 +4,29 @@ import java.time.Instant;
 import java.util.Objects;
 
 /**
- * The DeviceRegistry's view of one physical node:
- * static identity/capability, live resource state, and lifecycle status.
+ * The {@link com.phoenix.core.DeviceRegistry}'s view of one physical node:
+ * static identity/capability, live resource state, and lifecycle status,
+ * bundled together.
  *
- * <p>NodeRecord is immutable. Registry updates produce new records instead
- * of mutating existing instances.
+ * <pre>
+ * NodeRecord
+ * ├── NodeInfo        (static identity/capability)
+ * ├── ResourceStatus  (live resource snapshot)
+ * ├── NodeStatus      (lifecycle state)
+ * └── lastHeartbeat   (Instant)
+ * </pre>
+ *
+ * <p>This is the class the design discussion calls out as the missing piece
+ * in the original {@code Map<String, NodeInfo>} sketch: without it, live
+ * status/heartbeat/health end up bolted onto NodeInfo (which is supposed to
+ * stay static). A plain {@code Map<String, NodeRecord>} is still perfectly
+ * fine as DeviceRegistry's internal storage — NodeRecord is what makes that
+ * map's values richer than a single identity blob.
+ *
+ * <p>Immutable by design: every mutation on the registry (heartbeat, status
+ * update, state transition) produces a new NodeRecord via one of the
+ * {@code with*} methods rather than mutating fields in place. This plays
+ * nicely with ConcurrentHashMap.compute()-style updates in DeviceRegistry.
  */
 public record NodeRecord(
         NodeInfo info,
@@ -17,79 +35,27 @@ public record NodeRecord(
         Instant lastHeartbeat
 ) {
 
-    /**
-     * A freshly registered node starts ONLINE because registration itself
-     * establishes an initial liveness observation.
-     */
-    public static NodeRecord newlyRegistered(
-            NodeInfo info,
-            ResourceStatus initialStatus) {
-
-        Objects.requireNonNull(
-                info,
-                "info"
-        );
-
-        Objects.requireNonNull(
-                initialStatus,
-                "initialStatus"
-        );
-
-        return new NodeRecord(
-                info,
-                initialStatus,
-                NodeStatus.ONLINE,
-                Instant.now()
-        );
+    /** A freshly registered node: NEW state, heartbeat stamped now. */
+    public static NodeRecord newlyRegistered(NodeInfo info, ResourceStatus initialStatus) {
+        Objects.requireNonNull(info, "info");
+        Objects.requireNonNull(initialStatus, "initialStatus");
+        return new NodeRecord(info, initialStatus, NodeStatus.ONLINE, Instant.now());
     }
 
-    public NodeRecord withStatus(
-            ResourceStatus newStatus) {
-
-        return new NodeRecord(
-                info,
-                newStatus,
-                state,
-                lastHeartbeat
-        );
+    public NodeRecord withStatus(ResourceStatus newStatus) {
+        return new NodeRecord(info, newStatus, state, lastHeartbeat);
     }
 
-    public NodeRecord withState(
-            NodeStatus newState) {
-
-        return new NodeRecord(
-                info,
-                status,
-                newState,
-                lastHeartbeat
-        );
+    public NodeRecord withState(NodeStatus newState) {
+        return new NodeRecord(info, status, newState, lastHeartbeat);
     }
 
     public NodeRecord withHeartbeatNow() {
-
-        return new NodeRecord(
-                info,
-                status,
-                state,
-                Instant.now()
-        );
+        return new NodeRecord(info, status, state, Instant.now());
     }
 
-    /**
-     * Only healthy nodes should receive NEW work.
-     *
-     * ONLINE:
-     *   fully eligible.
-     *
-     * DEGRADED:
-     *   still tracked and allowed to recover, but no new work is assigned
-     *   until a fresh heartbeat proves liveness again.
-     *
-     * OFFLINE:
-     *   not schedulable.
-     */
+    /** Convenience: is this node currently a valid scheduling candidate? */
     public boolean isSchedulable() {
-
         return state == NodeStatus.ONLINE;
     }
 

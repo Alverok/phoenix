@@ -1,9 +1,7 @@
 package com.phoenix.net;
 
-import java.net.SocketTimeoutException;
 import java.time.Duration;
-import java.util.concurrent.CompletableFuture;
-import java.util.concurrent.TimeUnit;
+import java.util.Optional;
 import java.util.concurrent.TimeoutException;
 
 import com.google.inject.Inject;
@@ -14,10 +12,7 @@ import com.phoenix.model.TaskFailureReason;
 import com.phoenix.model.TaskResult;
 
 /**
- * Pull-based Node Agent transport.
- *
- * <p>Used by Android-style nodes which retrieve their work by polling
- * Phoenix rather than accepting inbound connections.
+ * Pull-based transport used by mobile/Android-style node agents.
  */
 @Singleton
 public class HttpNodeAgentClient
@@ -31,16 +26,15 @@ public class HttpNodeAgentClient
                     )
             );
 
-    private final TaskQueueService taskQueue;
     private final RegistrationServer registrationServer;
+    private final TaskQueueService taskQueue;
 
     @Inject
     public HttpNodeAgentClient(
-            TaskQueueService taskQueue,
-            RegistrationServer registrationServer) {
-
-        this.taskQueue = taskQueue;
+            RegistrationServer registrationServer,
+            TaskQueueService taskQueue) {
         this.registrationServer = registrationServer;
+        this.taskQueue = taskQueue;
     }
 
     @Override
@@ -48,30 +42,25 @@ public class HttpNodeAgentClient
             NodeExecutionTarget target,
             TaskDescriptor task) {
 
-        var deviceIdOptional =
+        Optional<String> deviceId =
                 registrationServer.deviceIdForNode(
                         target.nodeId()
                 );
 
-        if (deviceIdOptional.isEmpty()) {
-
+        if (deviceId.isEmpty()) {
             return new TaskResult(
                     task.id(),
                     "FAILED",
-                    "No device identity is known for "
-                            + target.displayName(),
+                    "Node " + target.displayName()
+                            + " is not currently connected",
                     TaskFailureReason.NODE_UNREACHABLE
             );
         }
 
-        String deviceId =
-                deviceIdOptional.get();
-
-        CompletableFuture<TaskResult> resultFuture =
-                taskQueue.submit(
-                        deviceId,
-                        task
-                );
+        taskQueue.submit(
+                deviceId.get(),
+                task
+        );
 
         System.out.printf(
                 "[HttpNodeAgentClient] Queued %s for %s; waiting for agent...%n",
@@ -80,23 +69,13 @@ public class HttpNodeAgentClient
         );
 
         try {
-
-            return resultFuture.get(
-                    TASK_TIMEOUT.toMillis(),
-                    TimeUnit.MILLISECONDS
+            return taskQueue.awaitResult(
+                    task.id(),
+                    TASK_TIMEOUT
             );
-
-        } catch (TimeoutException e) {
-
-            /*
-             * If the Android node never pulled the task, remove it so
-             * recovery does not leave stale work in the old node's queue.
-             *
-             * If it was already pulled, cancellation returns false and the
-             * already-running execution is allowed to finish harmlessly.
-             */
+        } catch (TimeoutException exception) {
             taskQueue.cancelQueuedTask(
-                    deviceId,
+                    deviceId.get(),
                     task.id()
             );
 
@@ -110,13 +89,10 @@ public class HttpNodeAgentClient
                             + " seconds",
                     TaskFailureReason.TIMEOUT
             );
-
-        } catch (InterruptedException e) {
-
+        } catch (InterruptedException exception) {
             Thread.currentThread().interrupt();
-
             taskQueue.cancelQueuedTask(
-                    deviceId,
+                    deviceId.get(),
                     task.id()
             );
 
@@ -127,11 +103,9 @@ public class HttpNodeAgentClient
                             + target.displayName(),
                     TaskFailureReason.TRANSPORT_ERROR
             );
-
-        } catch (Exception e) {
-
+        } catch (Exception exception) {
             taskQueue.cancelQueuedTask(
-                    deviceId,
+                    deviceId.get(),
                     task.id()
             );
 
@@ -141,28 +115,9 @@ public class HttpNodeAgentClient
                     "Transport to "
                             + target.displayName()
                             + " failed: "
-                            + e.getMessage(),
-                    classifyTransportFailure(e)
+                            + exception.getMessage(),
+                    TaskFailureReason.TRANSPORT_ERROR
             );
         }
-    }
-
-    private static TaskFailureReason classifyTransportFailure(
-            Exception exception) {
-
-        Throwable current =
-                exception;
-
-        while (current != null) {
-
-            if (current instanceof SocketTimeoutException) {
-                return TaskFailureReason.TIMEOUT;
-            }
-
-            current =
-                    current.getCause();
-        }
-
-        return TaskFailureReason.TRANSPORT_ERROR;
     }
 }

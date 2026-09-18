@@ -15,32 +15,22 @@ import com.phoenix.model.TaskFailureReason;
 import com.phoenix.model.TaskResult;
 
 /**
- * Push-based transport for directly addressable LAN nodes such as Linux.
- *
- * <p>Phoenix opens the connection itself, sends the task, and receives
- * the TaskResult in the HTTP response.
+ * Push-style transport for directly addressable LAN nodes such as Linux.
  */
 @Singleton
 public class HttpPushNodeAgentClient
         implements NodeAgentClient {
 
-    private static final int CONNECT_TIMEOUT_MS =
-            5_000;
-
-    private static final int EXECUTE_TIMEOUT_MS =
-            35_000;
+    private static final int CONNECT_TIMEOUT_MS = 5_000;
+    private static final int EXECUTE_TIMEOUT_MS = 35_000;
 
     private final RegistrationServer registrationServer;
-
-    private final Gson gson =
-            new Gson();
+    private final Gson gson = new Gson();
 
     @Inject
     public HttpPushNodeAgentClient(
             RegistrationServer registrationServer) {
-
-        this.registrationServer =
-                registrationServer;
+        this.registrationServer = registrationServer;
     }
 
     @Override
@@ -54,21 +44,17 @@ public class HttpPushNodeAgentClient
                 );
 
         if (callbackAddress.isEmpty()) {
-
             return new TaskResult(
                     task.id(),
                     "FAILED",
-                    "Node "
-                            + target.displayName()
+                    "Node " + target.displayName()
                             + " has no registered callback address",
                     TaskFailureReason.NODE_UNREACHABLE
             );
         }
 
         String url =
-                "http://"
-                        + callbackAddress.get()
-                        + "/execute";
+                "http://" + callbackAddress.get() + "/execute";
 
         String requestBody =
                 "{\"taskId\":\""
@@ -78,44 +64,26 @@ public class HttpPushNodeAgentClient
                         + "\",\"samples\":2000000}";
 
         System.out.printf(
-                "[HttpPushNodeAgentClient] "
-                        + "Pushing %s directly to %s (%s)%n",
+                "[HttpPushNodeAgentClient] Pushing %s directly to %s (%s)%n",
                 task.id(),
                 target.displayName(),
                 callbackAddress.get()
         );
 
         try {
-
             HttpURLConnection conn =
-                    (HttpURLConnection)
-                            new URL(url)
-                                    .openConnection();
+                    (HttpURLConnection) new URL(url).openConnection();
 
-            conn.setRequestMethod(
-                    "POST"
-            );
-
-            conn.setConnectTimeout(
-                    CONNECT_TIMEOUT_MS
-            );
-
-            conn.setReadTimeout(
-                    EXECUTE_TIMEOUT_MS
-            );
-
+            conn.setRequestMethod("POST");
+            conn.setConnectTimeout(CONNECT_TIMEOUT_MS);
+            conn.setReadTimeout(EXECUTE_TIMEOUT_MS);
             conn.setRequestProperty(
                     "Content-Type",
                     "application/json"
             );
+            conn.setDoOutput(true);
 
-            conn.setDoOutput(
-                    true
-            );
-
-            try (OutputStream os =
-                         conn.getOutputStream()) {
-
+            try (OutputStream os = conn.getOutputStream()) {
                 os.write(
                         requestBody.getBytes(
                                 StandardCharsets.UTF_8
@@ -123,29 +91,19 @@ public class HttpPushNodeAgentClient
                 );
             }
 
-            int code =
-                    conn.getResponseCode();
+            int code = conn.getResponseCode();
+            var stream = code == 200
+                    ? conn.getInputStream()
+                    : conn.getErrorStream();
 
-            var stream =
-                    code == 200
-                            ? conn.getInputStream()
-                            : conn.getErrorStream();
-
-            String response =
-                    stream == null
-                            ? ""
-                            : new String(
-                                    stream.readAllBytes(),
-                                    StandardCharsets.UTF_8
-                            );
+            String response = stream == null
+                    ? ""
+                    : new String(
+                            stream.readAllBytes(),
+                            StandardCharsets.UTF_8
+                    );
 
             if (code != 200) {
-
-                TaskFailureReason reason =
-                        code >= 500
-                                ? TaskFailureReason.TRANSPORT_ERROR
-                                : TaskFailureReason.EXECUTION_ERROR;
-
                 return new TaskResult(
                         task.id(),
                         "FAILED",
@@ -153,7 +111,9 @@ public class HttpPushNodeAgentClient
                                 + code
                                 + ": "
                                 + response,
-                        reason
+                        code >= 500
+                                ? TaskFailureReason.TRANSPORT_ERROR
+                                : TaskFailureReason.EXECUTION_ERROR
                 );
             }
 
@@ -163,9 +123,7 @@ public class HttpPushNodeAgentClient
                             ResultBody.class
                     );
 
-            if (body == null
-                    || body.status == null) {
-
+            if (body == null || body.status == null) {
                 return new TaskResult(
                         task.id(),
                         "FAILED",
@@ -174,54 +132,38 @@ public class HttpPushNodeAgentClient
                 );
             }
 
-            TaskFailureReason reason =
-                    "SUCCESS".equalsIgnoreCase(
-                            body.status
-                    )
-                            ? TaskFailureReason.NONE
-                            : TaskFailureReason.EXECUTION_ERROR;
-
             return new TaskResult(
                     task.id(),
                     body.status,
                     body.outputData,
-                    reason
+                    "SUCCESS".equalsIgnoreCase(body.status)
+                            ? TaskFailureReason.NONE
+                            : TaskFailureReason.EXECUTION_ERROR
             );
 
-        } catch (IOException e) {
-
+        } catch (IOException exception) {
             return new TaskResult(
                     task.id(),
                     "FAILED",
                     "Push to "
                             + target.displayName()
                             + " failed: "
-                            + e.getMessage(),
+                            + exception.getMessage(),
                     TaskFailureReason.NODE_UNREACHABLE
             );
         }
     }
 
-    private static String escape(
-            String value) {
-
+    private static String escape(String value) {
         return value == null
                 ? ""
                 : value
-                        .replace(
-                                "\\",
-                                "\\\\"
-                        )
-                        .replace(
-                                "\"",
-                                "\\\""
-                        );
+                        .replace("\\", "\\\\")
+                        .replace("\"", "\\\"");
     }
 
     private static class ResultBody {
-
         String status;
-
         String outputData;
     }
 }

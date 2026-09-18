@@ -79,7 +79,10 @@ public class WeightedPlacementCostModel implements PlacementCostModel {
      */
     private double estimateExecutionTime(NodeInfo info, ResourceStatus status, TaskDescriptor task) {
         double requestedCores = Math.max(task.requirements().cpuCores(), 1);
-        double freeCapacityFraction = Math.max(0.05, 1.0 - (status.cpuUsagePercent() / 100.0));
+        double cpu = status.cpuUsagePercent();
+        double freeCapacityFraction = cpu < 0
+                ? 1.0
+                : Math.max(0.05, 1.0 - (cpu / 100.0));
         double effectiveCores = Math.max(0.1, info.cpuCores() * freeCapacityFraction);
         return requestedCores / effectiveCores;
     }

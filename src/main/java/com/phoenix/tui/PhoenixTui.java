@@ -2,6 +2,7 @@ package com.phoenix.tui;
 
 import java.io.IOException;
 import java.io.PrintStream;
+import java.util.ArrayList;
 import java.util.List;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.atomic.AtomicBoolean;
@@ -43,7 +44,7 @@ public class PhoenixTui {
     private final AtomicBoolean running =
             new AtomicBoolean(true);
 
-    private volatile boolean dispatchRunning = false;
+    private int eventScrollOffset = 0;
 
     @Inject
     public PhoenixTui(
@@ -122,96 +123,68 @@ public class PhoenixTui {
         KeyStroke key;
 
         while ((key = screen.pollInput()) != null) {
-
             if (key.getKeyType() == KeyType.Escape) {
                 running.set(false);
                 return;
             }
 
-            if (key.getKeyType() != KeyType.Character) {
-                continue;
+            switch (key.getKeyType()) {
+                case ArrowUp -> { eventScrollOffset++; continue; }
+                case ArrowDown -> { eventScrollOffset = Math.max(0, eventScrollOffset - 1); continue; }
+                case PageUp -> { eventScrollOffset += 10; continue; }
+                case PageDown -> { eventScrollOffset = Math.max(0, eventScrollOffset - 10); continue; }
+                default -> { }
             }
 
-            char c =
-                    Character.toLowerCase(
-                            key.getCharacter()
-                    );
+            if (key.getKeyType() != KeyType.Character) continue;
 
+            char c = Character.toLowerCase(key.getCharacter());
             switch (c) {
-
                 case 'q' -> running.set(false);
-
                 case 'd' -> submitTask();
-
                 case 'c' -> eventLog.clear();
-
-                case 'h' -> {
-                    eventLog.append(
-                            "Commands: D=dispatch C=clear-log Q=quit"
-                    );
-                }
-
-                default -> {
-                    // Ignore other keys.
-                }
+                case 'g' -> eventScrollOffset = 0;
+                case 'h' -> eventLog.append(
+                        "Commands: D=dispatch C=clear G=latest "
+                                + "Up/Down=scroll PgUp/PgDn=page Q=quit"
+                );
+                default -> { }
             }
         }
     }
 
     private void submitTask() {
 
-        if (dispatchRunning) {
-            eventLog.append(
-                    "A task is already being dispatched."
-            );
-            return;
-        }
-
-        dispatchRunning = true;
-
-        int number =
-                taskCounter.getAndIncrement();
-
-        TaskDescriptor task =
-                new TaskDescriptor(
-                        String.format(
-                                "task-%03d",
-                                number
-                        ),
-                        "Monte-Carlo-Pi",
-                        2,
-                        512
-                );
+        int number = taskCounter.getAndIncrement();
+        TaskDescriptor task = new TaskDescriptor(
+                String.format("task-%03d", number),
+                "Monte-Carlo-Pi",
+                2,
+                512
+        );
 
         CompletableFuture.runAsync(() -> {
-
             try {
-
-                DispatchResult result =
-                        dispatcher.dispatch(task);
-
+                TaskDispatcher.Outcome outcome = dispatcher.dispatch(task);
+                if (outcome instanceof TaskDispatcher.Outcome.Completed completed) {
+                    DispatchResult result = completed.result();
+                    eventLog.append(
+                            "[TUI] " + task.id()
+                                    + " -> " + result.result().status()
+                                    + " on " + result.nodeDisplayName()
+                                    + " | output=" + result.result().outputData()
+                    );
+                } else {
+                    eventLog.append(
+                            "[TUI] " + task.id()
+                                    + " -> WAITING for an eligible node"
+                    );
+                }
+            } catch (Exception e) {
                 eventLog.append(
                         "[TUI] " + task.id()
-                                + " -> "
-                                + result.result().status()
-                                + " on "
-                                + result.nodeDisplayName()
-                                + " | output="
-                                + result.result().outputData()
+                                + " failed: " + e.getMessage()
                 );
-
-            } catch (Exception e) {
-
-                eventLog.append(
-                        "[TUI] "
-                                + task.id()
-                                + " failed: "
-                                + e.getMessage()
-                );
-
-            } finally {
-
-                dispatchRunning = false;
             }
         });
     }
@@ -434,15 +407,11 @@ public class PhoenixTui {
                 )
         );
 
-        g.putString(
-                32,
-                y,
-                String.format(
-                        "CPU %5.1f%%",
-                        node.status()
-                                .cpuUsagePercent()
-                )
-        );
+        String cpuText = node.status().cpuUsagePercent() < 0
+                ? "CPU   N/A"
+                : String.format("CPU %5.1f%%", node.status().cpuUsagePercent());
+
+        g.putString(32, y, cpuText);
 
         g.putString(
                 46,
@@ -516,100 +485,41 @@ public class PhoenixTui {
             int width,
             int height) {
 
-        box(
-                g,
-                x,
-                y,
-                width,
-                height
-        );
+        box(g, x, y, width, height);
+        g.setForegroundColor(TextColor.ANSI.CYAN);
+        g.putString(x + 2, y + 1, "TASKS");
 
-        g.setForegroundColor(
-                TextColor.ANSI.CYAN
-        );
+        int row = y + 3;
+        for (TaskJournal.TaskState task : taskJournal.recent(8)) {
+            if (row >= y + height - 1) break;
 
-        g.putString(
-                x + 2,
-                y + 1,
-                "TASKS"
-        );
+            TextColor statusColor = switch (task.status()) {
+                case "SUCCESS" -> TextColor.ANSI.GREEN;
+                case "FAILED" -> TextColor.ANSI.RED;
+                case "WAITING", "RETRYING" -> TextColor.ANSI.YELLOW;
+                case "RUNNING" -> TextColor.ANSI.CYAN;
+                default -> TextColor.ANSI.WHITE;
+            };
 
-        int row =
-                y + 3;
+            String displayStatus = "RETRYING".equals(task.status())
+                    ? "RETRY " + task.attempt()
+                    : task.status();
 
-        for (TaskJournal.TaskState task :
-                taskJournal.recent(8)) {
+            g.setForegroundColor(statusColor);
+            g.putString(
+                    x + 2, row,
+                    String.format("%-9s %-10s", task.taskId(), displayStatus)
+            );
 
-            if (row >= y + height - 1) {
-                break;
-            }
-
-            String displayStatus =
-                    switch (task.status()) {
-
-                        case "RETRYING" ->
-                                "RETRY " + task.attempt();
-
-                        default ->
-                                task.status();
-                    };
-
-            TextColor statusColor =
-                    switch (task.status()) {
-
-                        case "SUCCESS" ->
-                                TextColor.ANSI.GREEN;
-
-                        case "FAILED" ->
-                                TextColor.ANSI.RED;
-
-                        case "RETRYING" ->
-                                TextColor.ANSI.YELLOW;
-
-                        case "RUNNING",
-                             "SUBMITTED" ->
-                                TextColor.ANSI.CYAN;
-
-                        default ->
-                                TextColor.ANSI.WHITE;
-                    };
-
-            g.setForegroundColor(
-                    statusColor
+            g.setForegroundColor(TextColor.ANSI.WHITE);
+            g.putString(
+                    x + 24, row,
+                    truncate(task.nodeName() == null ? "-" : task.nodeName(), 18)
             );
 
             g.putString(
-                    x + 2,
-                    row,
-                    String.format(
-                            "%-11s %-18s",
-                            task.taskId(),
-                            displayStatus
-                    )
-            );
-
-            g.setForegroundColor(
-                    TextColor.ANSI.WHITE
-            );
-
-            g.putString(
-                    x + 22,
-                    row,
-                    truncate(
-                            task.nodeName() == null
-                                    ? "-"
-                                    : task.nodeName(),
-                            18
-                    )
-            );
-
-            g.putString(
-                    x + 42,
-                    row,
-                    String.format(
-                            "%5dms",
-                            task.elapsedMs()
-                    )
+                    x + 44, row,
+                    String.format("%5dms", task.elapsedMs())
             );
 
             row++;
@@ -623,59 +533,53 @@ public class PhoenixTui {
             int width,
             int height) {
 
-        box(
-                g,
-                x,
-                y,
-                width,
-                height
-        );
+        box(g, x, y, width, height);
+        g.setForegroundColor(TextColor.ANSI.CYAN);
+        g.putString(x + 2, y + 1, "EVENTS");
 
-        g.setForegroundColor(
-                TextColor.ANSI.CYAN
-        );
+        int visibleRows = Math.max(1, height - 4);
+        int innerWidth = Math.max(12, width - 4);
 
-        g.putString(
-                x + 2,
-                y + 1,
-                "EVENTS"
-        );
+        List<String> wrapped = new ArrayList<>();
+        for (String event : eventLog.snapshot()) {
+            wrapped.addAll(PhoenixEventLog.wrap(event, innerWidth));
+        }
 
-        List<String> events =
-                eventLog.recent(
-                        Math.max(
-                                1,
-                                height - 3
-                        )
-                );
+        int maxOffset = Math.max(0, wrapped.size() - visibleRows);
+        eventScrollOffset = Math.min(eventScrollOffset, maxOffset);
 
-        int row =
-                y + 3;
+        int offset = eventScrollOffset;
+        int end = wrapped.size() - offset;
+        int start = Math.max(0, end - visibleRows);
+        int row = y + 3;
 
-        for (String event : events) {
+        for (String line : wrapped.subList(start, end)) {
+            if (row >= y + height - 1) break;
 
-            if (row >= y + height - 1) {
-                break;
-            }
-
-            g.setForegroundColor(
-                    event.contains("FAILED")
+            TextColor color =
+                    line.contains("FAILED") || line.contains("WAITING")
                             ? TextColor.ANSI.RED
-                            : event.contains("DEGRADED")
+                            : line.contains("DEGRADED") || line.contains("OFFLINE")
+                            || line.contains("Recovery") || line.contains("RETRY")
                             ? TextColor.ANSI.YELLOW
-                            : event.contains("SUCCESS")
+                            : line.contains("SUCCESS")
                             ? TextColor.ANSI.GREEN
-                            : TextColor.ANSI.WHITE
-            );
+                            : TextColor.ANSI.WHITE;
 
-            g.putString(
-                    x + 2,
-                    row,
-                    event
-            );
-
+            g.setForegroundColor(color);
+            g.putString(x + 2, row, line);
             row++;
         }
+
+        g.setForegroundColor(TextColor.ANSI.CYAN);
+        String indicator = offset > 0
+                ? "↑" + offset + " [G]=live"
+                : "[G]=live";
+        g.putString(
+                Math.max(x + 2, x + width - indicator.length() - 2),
+                y + 1,
+                indicator
+        );
     }
 
     private void drawFooter(
@@ -683,37 +587,15 @@ public class PhoenixTui {
             int width,
             int height) {
 
-        g.setForegroundColor(
-                TextColor.ANSI.CYAN
-        );
+        g.setForegroundColor(TextColor.ANSI.CYAN);
+        g.putString(2, height - 2, "[D] Dispatch");
 
-        g.putString(
-                2,
-                height - 2,
-                "[D] Dispatch"
-        );
-
-        g.setForegroundColor(
-                TextColor.ANSI.WHITE
-        );
-
-        g.putString(
-                18,
-                height - 2,
-                "[C] Clear"
-        );
-
-        g.putString(
-                29,
-                height - 2,
-                "[H] Help"
-        );
-
-        g.putString(
-                40,
-                height - 2,
-                "[Q] Quit"
-        );
+        g.setForegroundColor(TextColor.ANSI.WHITE);
+        g.putString(18, height - 2, "[C] Clear");
+        g.putString(29, height - 2, "[H] Help");
+        g.putString(40, height - 2, "[↑↓/PgUp/PgDn] Scroll");
+        g.putString(64, height - 2, "[G] Live");
+        g.putString(74, height - 2, "[Q] Quit");
     }
 
     private static void drawBar(

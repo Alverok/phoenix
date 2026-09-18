@@ -5,29 +5,21 @@ import java.io.OutputStream;
 import java.io.PrintStream;
 import java.nio.charset.StandardCharsets;
 
-public final class PhoenixOutputCapture
-        extends OutputStream {
+/**
+ * Converts line-oriented stdout/stderr into structured TUI events.
+ */
+public final class PhoenixOutputCapture extends OutputStream {
 
     private final PhoenixEventLog eventLog;
+    private final StringBuilder currentLine = new StringBuilder();
 
-    private final StringBuilder currentLine =
-            new StringBuilder();
-
-    public PhoenixOutputCapture(
-            PhoenixEventLog eventLog) {
-
+    public PhoenixOutputCapture(PhoenixEventLog eventLog) {
         this.eventLog = eventLog;
     }
 
     @Override
-    public synchronized void write(int b)
-            throws IOException {
-
-        write(
-                new byte[]{(byte) b},
-                0,
-                1
-        );
+    public synchronized void write(int b) throws IOException {
+        write(new byte[]{(byte) b}, 0, 1);
     }
 
     @Override
@@ -36,24 +28,19 @@ public final class PhoenixOutputCapture
             int offset,
             int length) {
 
-        String text =
-                new String(
-                        bytes,
-                        offset,
-                        length,
-                        StandardCharsets.UTF_8
-                );
+        String text = new String(
+                bytes,
+                offset,
+                length,
+                StandardCharsets.UTF_8
+        );
 
         for (int i = 0; i < text.length(); i++) {
-
             char c = text.charAt(i);
 
             if (c == '\n') {
                 flushLine();
-                continue;
-            }
-
-            if (c != '\r') {
+            } else if (c != '\r') {
                 currentLine.append(c);
             }
         }
@@ -61,16 +48,13 @@ public final class PhoenixOutputCapture
 
     @Override
     public synchronized void flush() {
-
-        if (!currentLine.isEmpty()) {
-            flushLine();
-        }
+        // Deliberately do nothing.
+        // PrintStream may call flush() in the middle of printf/formatting.
+        // Only a real newline should create a TUI event.
     }
 
     private void flushLine() {
-
-        String line =
-                currentLine.toString().strip();
+        String line = currentLine.toString().strip();
 
         if (!line.isEmpty()) {
             eventLog.append(line);
@@ -84,7 +68,7 @@ public final class PhoenixOutputCapture
 
         return new PrintStream(
                 new PhoenixOutputCapture(eventLog),
-                true,
+                false,
                 StandardCharsets.UTF_8
         );
     }

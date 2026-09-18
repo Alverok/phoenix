@@ -1,7 +1,6 @@
 package com.phoenix.dispatch;
 
 import java.util.HashSet;
-import java.util.List;
 import java.util.Optional;
 import java.util.Set;
 
@@ -17,123 +16,102 @@ import com.phoenix.model.TaskDescriptor;
 import com.phoenix.model.TaskFailureReason;
 import com.phoenix.model.TaskResult;
 import com.phoenix.recovery.TaskRecoveryManager;
-import com.phoenix.scheduler.TaskScheduler;
 import com.phoenix.tui.TaskJournal;
 
-/**
- * Coordinates task placement and execution.
- *
- * <p>The dispatcher still delegates placement to TaskScheduler and execution
- * to IHardwareAdapter. Fault-aware recovery adds a retry loop around those
- * existing abstractions without coupling the dispatcher to transport code.
- */
 @Singleton
 public class TaskDispatcher {
 
     private final DeviceRegistry registry;
-    private final TaskScheduler scheduler;
     private final AdapterRegistry adapterRegistry;
     private final TaskJournal taskJournal;
     private final TaskRecoveryManager recoveryManager;
+    private final PendingTaskQueue pendingQueue;
 
     @Inject
     public TaskDispatcher(
             DeviceRegistry registry,
-            TaskScheduler scheduler,
             AdapterRegistry adapterRegistry,
             TaskJournal taskJournal,
-            TaskRecoveryManager recoveryManager) {
+            TaskRecoveryManager recoveryManager,
+            PendingTaskQueue pendingQueue) {
 
-        this.registry =
-                registry;
-
-        this.scheduler =
-                scheduler;
-
-        this.adapterRegistry =
-                adapterRegistry;
-
-        this.taskJournal =
-                taskJournal;
-
-        this.recoveryManager =
-                recoveryManager;
+        this.registry = registry;
+        this.adapterRegistry = adapterRegistry;
+        this.taskJournal = taskJournal;
+        this.recoveryManager = recoveryManager;
+        this.pendingQueue = pendingQueue;
     }
 
-    public DispatchResult dispatch(
-            TaskDescriptor task) {
-
-        taskJournal.submitted(
-                task
-        );
-
+    /**
+     * A dispatch either completes or becomes a logical waiting task.
+     * Waiting is normal control flow, not an exception.
+     */
+    public Outcome dispatch(TaskDescriptor task) {
+        taskJournal.submitted(task);
         System.out.printf(
                 "[Dispatcher] Task submitted: id=%s type=%s%n",
                 task.id(),
                 task.type()
         );
+        return place(task);
+    }
 
-        Set<String> excludedNodeIds =
-                new HashSet<>();
+    /** Re-placement path used by PendingTaskScheduler. */
+    public Outcome replace(TaskDescriptor task) {
+        return place(task);
+    }
 
-        DispatchResult lastResult =
-                null;
+    private Outcome place(TaskDescriptor task) {
 
-        for (
-                int attempt = 1;
-                attempt <= recoveryManager.maxAttempts();
-                attempt++
-        ) {
+        Set<String> excludedNodeIds = new HashSet<>();
+        DispatchResult lastResult = null;
 
-            List<NodeRecord> candidates =
-                    registry.listSchedulable()
-                            .stream()
-                            .filter(
-                                    node ->
-                                            !excludedNodeIds.contains(
-                                                    node.nodeId()
-                                            )
-                            )
-                            .toList();
+        for (int attempt = 1;
+             attempt <= recoveryManager.maxAttempts();
+             attempt++) {
 
             Optional<NodeRecord> selected =
-                    scheduler.selectNode(
+                    recoveryManager.chooseAlternative(
                             task,
-                            candidates
+                            excludedNodeIds
                     );
 
             if (selected.isEmpty()) {
+                if (lastResult != null
+                        && recoveryManager.isRetryable(lastResult.result())) {
 
-                if (lastResult != null) {
-
-                    taskJournal.completed(
+                    taskJournal.waiting(
                             task.id(),
-                            lastResult.result()
+                            lastResult.result().failureReason().name()
                     );
+                    pendingQueue.enqueue(task);
 
                     System.out.printf(
-                            "[Recovery] No eligible alternative "
-                                    + "remains for %s after %d attempt(s)%n",
+                            "[Recovery] %s WAITING: no eligible alternative after %d attempt(s)%n",
                             task.id(),
                             attempt - 1
                     );
-
-                    return lastResult;
+                    return new Outcome.Waiting(task.id());
                 }
 
-                throw new NoEligibleNodeException(
-                        task.id()
+                taskJournal.waiting(
+                        task.id(),
+                        TaskFailureReason.NO_ELIGIBLE_NODE.name()
                 );
+                pendingQueue.enqueue(task);
+
+                System.out.printf(
+                        "[Dispatcher] %s WAITING: no eligible node (will retry for %ds)%n",
+                        task.id(),
+                        pendingQueue.maxWait().toSeconds()
+                );
+
+                return new Outcome.Waiting(task.id());
             }
 
-            NodeRecord node =
-                    selected.get();
-
-            String nodeId =
-                    node.nodeId();
-
-            String nodeName =
-                    node.info().displayName();
+            NodeRecord node = selected.get();
+            String nodeId = node.nodeId();
+            String nodeName = node.info().displayName();
 
             taskJournal.assigned(
                     task.id(),
@@ -153,20 +131,15 @@ public class TaskDispatcher {
                     );
 
             if (attempt == 1) {
-
                 System.out.printf(
-                        "[Dispatcher] Resolved adapter '%s' "
-                                + "for node %s (id=%s)%n",
+                        "[Dispatcher] Resolved adapter '%s' for node %s (id=%s)%n",
                         target.adapterType(),
                         target.displayName(),
                         target.nodeId()
                 );
-
             } else {
-
                 System.out.printf(
-                        "[Recovery] Retry %d/%d: "
-                                + "assigning %s to %s (id=%s)%n",
+                        "[Recovery] Retry %d/%d: reassigning %s to %s (id=%s)%n",
                         attempt,
                         recoveryManager.maxAttempts(),
                         task.id(),
@@ -178,38 +151,33 @@ public class TaskDispatcher {
             TaskResult result;
 
             try {
-
-                result =
-                        adapter.executeTask(
-                                task,
-                                target
-                        );
-
+                result = adapter.executeTask(
+                        task,
+                        target
+                );
             } catch (Exception exception) {
-
-                result =
-                        new TaskResult(
-                                task.id(),
-                                "FAILED",
-                                "Adapter execution failed: "
-                                        + exception.getMessage(),
-                                TaskFailureReason.TRANSPORT_ERROR
-                        );
+                result = new TaskResult(
+                        task.id(),
+                        "FAILED",
+                        "Adapter execution failed: "
+                                + exception.getMessage(),
+                        TaskFailureReason.TRANSPORT_ERROR
+                );
             }
 
-            adapter.reportResult(
-                    result
-            );
+            adapter.reportResult(result);
 
-            lastResult =
+            DispatchResult dispatchResult =
                     new DispatchResult(
                             nodeId,
                             nodeName,
                             result
                     );
 
-            if (result.isSuccess()) {
+            lastResult = dispatchResult;
 
+            if (result.isSuccess()) {
+                pendingQueue.remove(task.id());
                 taskJournal.completed(
                         task.id(),
                         result
@@ -220,116 +188,79 @@ public class TaskDispatcher {
                         result.status()
                 );
 
-                return lastResult;
+                return new Outcome.Completed(
+                        dispatchResult
+                );
             }
 
             System.out.printf(
-                    "[Recovery] Task %s failed on %s "
-                            + "reason=%s%n",
+                    "[Recovery] Task %s failed on %s reason=%s%n",
                     task.id(),
                     nodeName,
                     result.failureReason()
             );
 
-            /*
-             * A task execution error is not automatically evidence
-             * that the node itself is broken.
-             */
-            if (!recoveryManager.isRecoverable(
-                    result
-            )) {
-
+            if (!recoveryManager.isRetryable(result)) {
                 taskJournal.completed(
                         task.id(),
                         result
                 );
-
-                System.out.printf(
-                        "[Dispatcher] Task %s ended with terminal "
-                                + "failure reason=%s%n",
-                        task.id(),
-                        result.failureReason()
+                return new Outcome.Completed(
+                        dispatchResult
                 );
-
-                return lastResult;
             }
 
-            /*
-             * This node is excluded for the remainder of this logical task.
-             */
-            excludedNodeIds.add(
-                    nodeId
-            );
+            excludedNodeIds.add(nodeId);
 
-            /*
-             * If infrastructure failure came from an otherwise ONLINE node,
-             * mark it DEGRADED so the normal scheduler also stops assigning
-             * unrelated NEW tasks to it until a heartbeat recovers it.
-             */
-            registry.get(
-                    nodeId
-            ).ifPresent(
-                    current -> {
+            registry.get(nodeId).ifPresent(current -> {
+                if (current.state() == NodeStatus.ONLINE) {
+                    System.out.printf(
+                            "[Recovery] Node %s failed task %s -> DEGRADED%n",
+                            nodeName,
+                            task.id()
+                    );
+                    registry.markDegraded(nodeId);
+                }
+            });
 
-                        if (current.state()
-                                == NodeStatus.ONLINE) {
-
-                            System.out.printf(
-                                    "[Recovery] Node %s failed "
-                                            + "task %s -> DEGRADED%n",
-                                    nodeName,
-                                    task.id()
-                            );
-
-                            registry.markDegraded(
-                                    nodeId
-                            );
-                        }
-                    }
-            );
-
-            if (
-                    attempt
-                            >= recoveryManager.maxAttempts()
-            ) {
-
-                break;
+            if (attempt < recoveryManager.maxAttempts()) {
+                taskJournal.retrying(
+                        task.id(),
+                        nodeName,
+                        attempt + 1,
+                        result.failureReason().name()
+                );
             }
-
-            taskJournal.retrying(
-                    task.id(),
-                    nodeName,
-                    attempt + 1,
-                    result.failureReason().name()
-            );
-
-            System.out.printf(
-                    "[Recovery] Re-attempting %s...%n",
-                    task.id()
-            );
         }
 
-        /*
-         * All attempts exhausted.
-         */
         if (lastResult != null) {
-
             taskJournal.completed(
                     task.id(),
                     lastResult.result()
             );
-
             System.out.printf(
                     "[Recovery] Task %s exhausted %d attempt(s)%n",
                     task.id(),
                     recoveryManager.maxAttempts()
             );
-
-            return lastResult;
+            return new Outcome.Completed(lastResult);
         }
 
-        throw new NoEligibleNodeException(
-                task.id()
+        taskJournal.waiting(
+                task.id(),
+                TaskFailureReason.NO_ELIGIBLE_NODE.name()
         );
+        pendingQueue.enqueue(task);
+        return new Outcome.Waiting(task.id());
+    }
+
+    public sealed interface Outcome
+            permits Outcome.Completed, Outcome.Waiting {
+
+        record Completed(DispatchResult result)
+                implements Outcome {}
+
+        record Waiting(String taskId)
+                implements Outcome {}
     }
 }
