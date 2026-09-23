@@ -9,12 +9,13 @@ import java.util.Set;
  * plus room to grow (latency budget, required hardware class, capability
  * tags) without turning TaskDescriptor into a 15-argument constructor.
  *
- * <p>Day 2 only actually uses {@code cpuCores} and {@code memoryMb} for
- * eligibility filtering in {@link com.phoenix.scheduler.GreedyCostScheduler}.
- * {@code maxNetworkLatencyMs}, {@code requiredHardwareClass} and
- * {@code requiredCapabilities} are wired into the model and the filter now
- * so a later milestone can start populating them without touching the
- * scheduler's method signature again.
+ * <p>All five fields are actively enforced as hard eligibility requirements
+ * by {@link com.phoenix.scheduler.GreedyCostScheduler}: {@code cpuCores},
+ * {@code memoryMb}, {@code requiredHardwareClass}, {@code requiredCapabilities}
+ * and {@code maxNetworkLatencyMs} must all pass before a node is considered
+ * eligible. Only eligible nodes are passed to the placement cost model; the
+ * cost model ranks eligible candidates but never compensates for a violated
+ * hard requirement.
  */
 public record TaskRequirements(
         int cpuCores,

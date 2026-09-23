@@ -77,6 +77,14 @@ public class GreedyCostScheduler implements TaskScheduler {
         return Optional.of(best);
     }
 
+    /**
+     * A candidate node is eligible only when every hard constraint declared
+     * by {@link TaskRequirements} passes: CPU, memory, hardware class,
+     * required capabilities, and maximum network latency (issue #14 — these
+     * were declared on the model but not all of them were previously
+     * enforced here). The cost model only ever ranks nodes that pass all
+     * five; it never compensates for a violated hard requirement.
+     */
     private boolean isEligible(
             NodeRecord node,
             TaskDescriptor task) {
@@ -96,6 +104,16 @@ public class GreedyCostScheduler implements TaskScheduler {
                                 required == node.info().hardwareClass())
                         .orElse(true);
 
-        return cpuOk && memOk && hardwareOk;
+        boolean capabilitiesOk =
+                node.info().capabilities()
+                        .containsAll(req.requiredCapabilities());
+
+        boolean latencyOk =
+                req.maxNetworkLatencyMs()
+                        .map(maxLatencyMs ->
+                                node.status().networkLatencyMs() <= maxLatencyMs)
+                        .orElse(true);
+
+        return cpuOk && memOk && hardwareOk && capabilitiesOk && latencyOk;
     }
 }
