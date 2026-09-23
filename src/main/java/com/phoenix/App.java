@@ -2,6 +2,7 @@ package com.phoenix;
 
 import com.google.inject.Guice;
 import com.google.inject.Injector;
+import com.phoenix.core.NodeHealthMonitor;
 import com.phoenix.core.PhoenixModule;
 import com.phoenix.dispatch.PendingTaskScheduler;
 import com.phoenix.net.RegistrationServer;
@@ -29,9 +30,16 @@ public class App {
                         PendingTaskScheduler.class
                 );
 
+        NodeHealthMonitor nodeHealthMonitor =
+                injector.getInstance(
+                        NodeHealthMonitor.class
+                );
+
         server.start(
                 REGISTRATION_PORT
         );
+
+        nodeHealthMonitor.start();
 
         pendingTaskScheduler.start();
 
@@ -51,6 +59,7 @@ public class App {
         } finally {
 
             pendingTaskScheduler.stop();
+            nodeHealthMonitor.stop();
             server.stop();
         }
     }

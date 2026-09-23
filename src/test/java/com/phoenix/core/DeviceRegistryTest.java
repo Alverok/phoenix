@@ -58,14 +58,17 @@ class DeviceRegistryTest {
     }
 
     @Test
-    void heartbeatBringsADegradedNodeBackOnline() {
+    void heartbeatRefreshesTimestampWithoutChangingLifecycleState() {
         DeviceRegistry registry = new DeviceRegistry();
         registry.register(sampleNode("node-1", "Linux-01"), sampleStatus());
         registry.markDegraded("node-1");
-        assertEquals(NodeStatus.DEGRADED, registry.get("node-1").orElseThrow().state());
 
+        NodeRecord before = registry.get("node-1").orElseThrow();
         registry.updateHeartbeat("node-1");
-        assertEquals(NodeStatus.ONLINE, registry.get("node-1").orElseThrow().state());
+        NodeRecord after = registry.get("node-1").orElseThrow();
+
+        assertEquals(NodeStatus.DEGRADED, after.state());
+        assertTrue(!after.lastHeartbeat().isBefore(before.lastHeartbeat()));
     }
 
     @Test

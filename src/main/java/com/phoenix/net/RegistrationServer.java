@@ -5,18 +5,15 @@ import java.io.OutputStream;
 import java.net.InetSocketAddress;
 import java.net.URLDecoder;
 import java.nio.charset.StandardCharsets;
-import java.time.Instant;
 import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
-import java.util.concurrent.Executors;
-import java.util.concurrent.TimeUnit;
 
 import com.google.gson.Gson;
 import com.google.inject.Inject;
 import com.google.inject.Singleton;
-import com.phoenix.core.DeviceRegistry;
+import com.phoenix.core.NodeTelemetryService;
 import com.phoenix.model.NodeRecord;
 import com.phoenix.model.NodeRegistrationRequest;
 import com.phoenix.model.NodeStatus;
@@ -30,27 +27,29 @@ import com.sun.net.httpserver.HttpServer;
  * Core-side HTTP gateway for Phoenix Node Agents.
  *
  * <p>The server intentionally knows about the transport format, but does not
- * perform scheduling or hardware-specific execution. It translates external
- * REGISTER/HEARTBEAT messages into Phoenix domain operations on DeviceRegistry.
+ * perform scheduling or hardware-specific execution, and — per Issue #15 —
+ * does not own node lifecycle policy either. It decodes REGISTER/HEARTBEAT
+ * messages, extracts node/device identity, and translates the payload into
+ * transport-neutral calls on {@link NodeTelemetryService}, which is the
+ * single authoritative path into the Phoenix domain model shared by every
+ * transport (HTTP today, MQTT/other later). Lifecycle transitions
+ * (ONLINE/DEGRADED/OFFLINE) are decided by {@code NodeHealthMonitor}, not
+ * here.
+ *
+ * <p>{@code nodeIdByDeviceId} and {@code callbackAddressByNodeId} remain
+ * HTTP-specific: they resolve this transport's device identity and push
+ * callback routing, which is out of scope for the Issue #15 lifecycle
+ * refactor.
  */
 @Singleton
 public class RegistrationServer {
 
-    private static final long DEGRADED_AFTER_MS = 20_000;
-    private static final long OFFLINE_AFTER_MS = 60_000;
-
-    private final DeviceRegistry deviceRegistry;
+    private final NodeTelemetryService nodeTelemetryService;
     private final TaskQueueService taskQueue;
     private final Gson gson = new Gson();
 
     private final Map<String, String> nodeIdByDeviceId =
             new ConcurrentHashMap<>();
-
-    private final Map<String, Instant> lastSeen =
-            new ConcurrentHashMap<>();
-
-    private final Set<String> liveNodeIds =
-            ConcurrentHashMap.newKeySet();
 
     private final Map<String, String> callbackAddressByNodeId =
         new ConcurrentHashMap<>();
@@ -59,10 +58,10 @@ public class RegistrationServer {
 
     @Inject
     public RegistrationServer(
-            DeviceRegistry deviceRegistry,
+            NodeTelemetryService nodeTelemetryService,
             TaskQueueService taskQueue) {
 
-        this.deviceRegistry = deviceRegistry;
+        this.nodeTelemetryService = nodeTelemetryService;
         this.taskQueue = taskQueue;
     }
 
@@ -85,17 +84,6 @@ public class RegistrationServer {
                 "[RegistrationServer] Listening for Phoenix Node Agents on port "
                         + port
         );
-
-        Executors.newSingleThreadScheduledExecutor(r -> {
-            Thread thread = new Thread(r, "phoenix-heartbeat-monitor");
-            thread.setDaemon(true);
-            return thread;
-        }).scheduleAtFixedRate(
-                this::checkStaleness,
-                5,
-                5,
-                TimeUnit.SECONDS
-        );
     }
 
     public void stop() {
@@ -103,10 +91,6 @@ public class RegistrationServer {
             server.stop(0);
             server = null;
         }
-    }
-
-    public Set<String> getLiveNodeIds() {
-        return Set.copyOf(liveNodeIds);
     }
 
     public Optional<String> deviceIdForNode(String nodeId) {
@@ -146,7 +130,7 @@ public class RegistrationServer {
                 String existingNodeId =
                         nodeIdByDeviceId.get(announcement.deviceId);
 
-                deviceRegistry.get(existingNodeId).ifPresent(record -> {
+                nodeTelemetryService.get(existingNodeId).ifPresent(record -> {
                     System.out.printf(
                             "[RegistrationServer] Device %s already registered as node %s%n",
                             announcement.deviceId,
@@ -195,15 +179,12 @@ public class RegistrationServer {
                             initialStatus
                     );
 
-            var nodeInfo = deviceRegistry.register(request);
+            var nodeInfo = nodeTelemetryService.register(request);
 
             nodeIdByDeviceId.put(
                     announcement.deviceId,
                     nodeInfo.nodeId()
             );
-
-            liveNodeIds.add(nodeInfo.nodeId());
-            lastSeen.put(nodeInfo.nodeId(), Instant.now());
 
             // ADDED: remember where this node can receive pushed tasks.
             storeCallbackAddressIfPresent(
@@ -329,7 +310,7 @@ public class RegistrationServer {
             );
 
             Optional<NodeRecord> existing =
-                    deviceRegistry.get(nodeId);
+                    nodeTelemetryService.get(nodeId);
 
             if (existing.isEmpty()) {
                 nodeIdByDeviceId.remove(heartbeat.deviceId);
@@ -343,15 +324,17 @@ public class RegistrationServer {
                 return;
             }
 
-            deviceRegistry.updateStatus(nodeId, status);
-            deviceRegistry.updateHeartbeat(nodeId);
-
-            lastSeen.put(nodeId, Instant.now());
-
             NodeStatus previousState =
                     existing.get().state();
 
-            if (previousState == NodeStatus.DEGRADED) {
+            nodeTelemetryService.reportHeartbeat(
+                    nodeId,
+                    status
+            );
+
+            if (previousState == NodeStatus.DEGRADED
+                    || previousState == NodeStatus.OFFLINE) {
+
                 System.out.printf(
                         "[RegistrationServer] Heartbeat resumed from node %s -> ONLINE%n",
                         nodeId
@@ -426,7 +409,7 @@ public class RegistrationServer {
                 return;
                 }
 
-                Optional<NodeRecord> record = deviceRegistry.get(nodeId);
+                Optional<NodeRecord> record = nodeTelemetryService.get(nodeId);
                 if (record.isEmpty() || record.get().state() != NodeStatus.ONLINE) {
                 exchange.sendResponseHeaders(204, -1);
                 return;
@@ -570,70 +553,6 @@ public class RegistrationServer {
         String status;
         String outputData;
         long executionTimeMs;
-    }
-
-    private void checkStaleness() {
-
-        Instant now =
-                Instant.now();
-
-        for (String nodeId : liveNodeIds) {
-
-            Instant seen =
-                    lastSeen.get(nodeId);
-
-            if (seen == null) {
-                continue;
-            }
-
-            long ageMs =
-                    now.toEpochMilli()
-                            - seen.toEpochMilli();
-
-            deviceRegistry.get(nodeId)
-                    .ifPresent(record -> {
-
-                        if (ageMs >= OFFLINE_AFTER_MS) {
-
-                            if (record.state()
-                                    != NodeStatus.OFFLINE) {
-
-                                System.out.printf(
-                                        "[RegistrationServer] "
-                                                + "No heartbeat from %s "
-                                                + "in %ds -> OFFLINE%n",
-                                        record.info().displayName(),
-                                        ageMs / 1000
-                                );
-
-                                deviceRegistry.markOffline(
-                                        nodeId
-                                );
-                            }
-
-                            return;
-                        }
-
-                        if (ageMs >= DEGRADED_AFTER_MS) {
-
-                            if (record.state()
-                                    == NodeStatus.ONLINE) {
-
-                                System.out.printf(
-                                        "[RegistrationServer] "
-                                                + "No heartbeat from %s "
-                                                + "in %ds -> DEGRADED%n",
-                                        record.info().displayName(),
-                                        ageMs / 1000
-                                );
-
-                                deviceRegistry.markDegraded(
-                                        nodeId
-                                );
-                            }
-                        }
-                    });
-        }
     }
 
     private static String readBody(
