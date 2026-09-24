@@ -66,6 +66,8 @@ public class PhoenixModule extends AbstractModule {
         bind(TaskJournal.class).in(Singleton.class);
         bind(PhoenixTui.class).in(Singleton.class);
         bind(DeviceRegistry.class).in(Singleton.class);
+        bind(NodeTelemetryService.class).in(Singleton.class);
+        bind(NodeHealthMonitor.class).in(Singleton.class);
         bind(AdapterRegistry.class).in(Singleton.class);
         bind(RegistrationServer.class).in(Singleton.class);
         bind(TaskQueueService.class).in(Singleton.class);

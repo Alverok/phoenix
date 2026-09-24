@@ -100,16 +100,20 @@ public class DeviceRegistry {
         nodes.computeIfPresent(nodeId, (id, record) -> record.withStatus(newStatus).withHeartbeatNow());
     }
 
-    /** Record a heartbeat without changing resource status (liveness only). */
+    /**
+     * Record that a heartbeat was received without applying lifecycle policy.
+     *
+     * <p>The heartbeat timestamp is authoritative liveness data. Whether the
+     * node should transition to ONLINE, DEGRADED, or OFFLINE is decided by
+     * {@link NodeHealthMonitor}, not by the registry itself.
+     */
     public void updateHeartbeat(String nodeId) {
-        nodes.computeIfPresent(nodeId, (id, record) -> {
-            NodeRecord refreshed = record.withHeartbeatNow();
-            // A heartbeat from a previously DEGRADED/OFFLINE node means it's back.
-            if (refreshed.state() != NodeStatus.ONLINE) {
-                refreshed = refreshed.withState(NodeStatus.ONLINE);
-            }
-            return refreshed;
-        });
+        nodes.computeIfPresent(nodeId,(id, record) -> record.withHeartbeatNow());
+    }
+
+    /** Apply an ONLINE lifecycle transition requested by the health policy. */
+    public void markOnline(String nodeId) {
+        transitionState(nodeId, NodeStatus.ONLINE);
     }
 
     public void markDegraded(String nodeId) {
