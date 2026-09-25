@@ -4,7 +4,7 @@ import com.google.inject.Guice;
 import com.google.inject.Injector;
 import com.phoenix.core.NodeHealthMonitor;
 import com.phoenix.core.PhoenixModule;
-import com.phoenix.dispatch.PendingTaskScheduler;
+import com.phoenix.dispatch.TaskAdmission;
 import com.phoenix.net.RegistrationServer;
 import com.phoenix.tui.PhoenixTui;
 
@@ -25,9 +25,9 @@ public class App {
                         RegistrationServer.class
                 );
 
-        PendingTaskScheduler pendingTaskScheduler =
+        TaskAdmission taskAdmission =
                 injector.getInstance(
-                        PendingTaskScheduler.class
+                        TaskAdmission.class
                 );
 
         NodeHealthMonitor nodeHealthMonitor =
@@ -41,7 +41,7 @@ public class App {
 
         nodeHealthMonitor.start();
 
-        pendingTaskScheduler.start();
+        taskAdmission.start();
 
         System.out.println(
                 "Phoenix Core initialized."
@@ -58,7 +58,7 @@ public class App {
 
         } finally {
 
-            pendingTaskScheduler.stop();
+            taskAdmission.stop();
             nodeHealthMonitor.stop();
             server.stop();
         }
