@@ -11,6 +11,7 @@ import org.junit.jupiter.api.Test;
 import com.phoenix.adapter.IHardwareAdapter;
 import com.phoenix.core.AdapterRegistry;
 import com.phoenix.core.DeviceRegistry;
+import com.phoenix.core.PlacementReservationService;
 import com.phoenix.model.HardwareClass;
 import com.phoenix.model.NodeExecutionTarget;
 import com.phoenix.model.NodeInfo;
@@ -90,6 +91,12 @@ class PendingTaskSchedulerFifoPolicyTest {
                         scheduler
                 );
 
+        PlacementReservationService reservationService =
+                new PlacementReservationService(
+                        registry,
+                        scheduler
+                );
+
         PendingTaskQueue pendingQueue =
                 new PendingTaskQueue();
 
@@ -99,7 +106,8 @@ class PendingTaskSchedulerFifoPolicyTest {
                         adapterRegistry,
                         journal,
                         recoveryManager,
-                        pendingQueue
+                        pendingQueue,
+                        reservationService
                 );
 
         /*

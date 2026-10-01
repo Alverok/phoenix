@@ -9,6 +9,7 @@ import com.google.inject.Singleton;
 import com.phoenix.adapter.IHardwareAdapter;
 import com.phoenix.core.AdapterRegistry;
 import com.phoenix.core.DeviceRegistry;
+import com.phoenix.core.PlacementReservationService;
 import com.phoenix.model.NodeExecutionTarget;
 import com.phoenix.model.NodeRecord;
 import com.phoenix.model.NodeStatus;
@@ -26,6 +27,7 @@ public class TaskDispatcher {
     private final TaskJournal taskJournal;
     private final TaskRecoveryManager recoveryManager;
     private final PendingTaskQueue pendingQueue;
+    private final PlacementReservationService reservationService;
 
     @Inject
     public TaskDispatcher(
@@ -33,13 +35,15 @@ public class TaskDispatcher {
             AdapterRegistry adapterRegistry,
             TaskJournal taskJournal,
             TaskRecoveryManager recoveryManager,
-            PendingTaskQueue pendingQueue) {
+            PendingTaskQueue pendingQueue,
+            PlacementReservationService reservationService) {
 
         this.registry = registry;
         this.adapterRegistry = adapterRegistry;
         this.taskJournal = taskJournal;
         this.recoveryManager = recoveryManager;
         this.pendingQueue = pendingQueue;
+        this.reservationService = reservationService;
     }
 
     /**
@@ -47,220 +51,328 @@ public class TaskDispatcher {
      * Waiting is normal control flow, not an exception.
      */
     public Outcome dispatch(TaskDescriptor task) {
+
         taskJournal.submitted(task);
+
         System.out.printf(
                 "[Dispatcher] Task submitted: id=%s type=%s%n",
                 task.id(),
                 task.type()
         );
+
         return place(task);
     }
 
-    /** Re-placement path used by PendingTaskScheduler. */
+    /**
+     * Re-placement path used by TaskAdmission for pending/recovery work.
+     *
+     * <p>Placement reservation is acquired inside the common place() path,
+     * so fresh and recovered tasks use identical capacity-accounting
+     * semantics.</p>
+     */
     public Outcome replace(TaskDescriptor task) {
         return place(task);
     }
 
     private Outcome place(TaskDescriptor task) {
 
-        Set<String> excludedNodeIds = new HashSet<>();
-        DispatchResult lastResult = null;
+        Set<String> excludedNodeIds =
+                new HashSet<>();
+
+        DispatchResult lastResult =
+                null;
 
         for (int attempt = 1;
              attempt <= recoveryManager.maxAttempts();
              attempt++) {
 
-            Optional<NodeRecord> selected =
-                    recoveryManager.chooseAlternative(
+            /*
+             * Selection and reservation are one Core-side operation.
+             *
+             * The reservation service:
+             *   1. obtains current node snapshots,
+             *   2. removes nodes without reservable capacity,
+             *   3. invokes the existing scheduler,
+             *   4. re-reads the selected node,
+             *   5. commits the reservation atomically.
+             */
+            Optional<PlacementReservationService.Reservation>
+                    reserved =
+                    reservationService.selectAndReserve(
                             task,
                             excludedNodeIds
                     );
 
-            if (selected.isEmpty()) {
+            if (reserved.isEmpty()) {
+
                 if (lastResult != null
-                        && recoveryManager.isRetryable(lastResult.result())) {
+                        && recoveryManager.isRetryable(
+                                lastResult.result())) {
 
                     taskJournal.waiting(
                             task.id(),
-                            lastResult.result().failureReason().name()
+                            lastResult.result()
+                                    .failureReason()
+                                    .name()
                     );
+
                     pendingQueue.enqueue(task);
 
                     System.out.printf(
-                            "[Recovery] %s WAITING: no eligible alternative after %d attempt(s)%n",
+                            "[Recovery] %s WAITING: "
+                                    + "no eligible alternative "
+                                    + "after %d attempt(s)%n",
                             task.id(),
                             attempt - 1
                     );
-                    return new Outcome.Waiting(task.id());
+
+                    return new Outcome.Waiting(
+                            task.id()
+                    );
                 }
 
                 taskJournal.waiting(
                         task.id(),
                         TaskFailureReason.NO_ELIGIBLE_NODE.name()
                 );
+
                 pendingQueue.enqueue(task);
 
                 System.out.printf(
-                        "[Dispatcher] %s WAITING: no eligible node (will retry for %ds)%n",
+                        "[Dispatcher] %s WAITING: "
+                                + "no eligible node "
+                                + "(will retry for %ds)%n",
                         task.id(),
                         pendingQueue.maxWait().toSeconds()
                 );
 
-                return new Outcome.Waiting(task.id());
+                return new Outcome.Waiting(
+                        task.id()
+                );
             }
 
-            NodeRecord node = selected.get();
-            String nodeId = node.nodeId();
-            String nodeName = node.info().displayName();
+            /*
+             * The reservation remains held for the entire current
+             * execution attempt.
+             *
+             * try-with-resources guarantees release on:
+             *   - success
+             *   - retryable failure
+             *   - non-retryable failure
+             *   - adapter exception
+             *   - timeout result
+             *   - interruption/other RuntimeException
+             *
+             * #28 will later refine the meaning of the execution lifecycle,
+             * but #27 deliberately follows the current synchronous adapter
+             * contract.
+             */
+            try (PlacementReservationService.Reservation reservation =
+                         reserved.get()) {
 
-            taskJournal.assigned(
-                    task.id(),
-                    nodeName
-            );
+                NodeRecord node =
+                        reservation.node();
 
-            IHardwareAdapter adapter =
-                    adapterRegistry.resolve(
-                            node.info().adapterType()
+                String nodeId =
+                        node.nodeId();
+
+                String nodeName =
+                        node.info().displayName();
+
+                taskJournal.assigned(
+                        task.id(),
+                        nodeName
+                );
+
+                IHardwareAdapter adapter =
+                        adapterRegistry.resolve(
+                                node.info().adapterType()
+                        );
+
+                NodeExecutionTarget target =
+                        new NodeExecutionTarget(
+                                nodeId,
+                                nodeName,
+                                node.info().adapterType()
+                        );
+
+                if (attempt == 1) {
+
+                    System.out.printf(
+                            "[Dispatcher] Resolved adapter '%s' "
+                                    + "for node %s (id=%s)%n",
+                            target.adapterType(),
+                            target.displayName(),
+                            target.nodeId()
                     );
 
-            NodeExecutionTarget target =
-                    new NodeExecutionTarget(
-                            nodeId,
-                            nodeName,
-                            node.info().adapterType()
+                } else {
+
+                    System.out.printf(
+                            "[Recovery] Retry %d/%d: "
+                                    + "reassigning %s to %s (id=%s)%n",
+                            attempt,
+                            recoveryManager.maxAttempts(),
+                            task.id(),
+                            target.displayName(),
+                            target.nodeId()
+                    );
+                }
+
+                TaskResult result;
+
+                try {
+
+                    result =
+                            adapter.executeTask(
+                                    task,
+                                    target
+                            );
+
+                } catch (Exception exception) {
+
+                    result =
+                            new TaskResult(
+                                    task.id(),
+                                    "FAILED",
+                                    "Adapter execution failed: "
+                                            + exception.getMessage(),
+                                    TaskFailureReason.TRANSPORT_ERROR
+                            );
+                }
+
+                adapter.reportResult(result);
+
+                DispatchResult dispatchResult =
+                        new DispatchResult(
+                                nodeId,
+                                nodeName,
+                                result
+                        );
+
+                lastResult =
+                        dispatchResult;
+
+                if (result.isSuccess()) {
+
+                    pendingQueue.remove(
+                            task.id()
                     );
 
-            if (attempt == 1) {
-                System.out.printf(
-                        "[Dispatcher] Resolved adapter '%s' for node %s (id=%s)%n",
-                        target.adapterType(),
-                        target.displayName(),
-                        target.nodeId()
-                );
-            } else {
-                System.out.printf(
-                        "[Recovery] Retry %d/%d: reassigning %s to %s (id=%s)%n",
-                        attempt,
-                        recoveryManager.maxAttempts(),
-                        task.id(),
-                        target.displayName(),
-                        target.nodeId()
-                );
-            }
-
-            TaskResult result;
-
-            try {
-                result = adapter.executeTask(
-                        task,
-                        target
-                );
-            } catch (Exception exception) {
-                result = new TaskResult(
-                        task.id(),
-                        "FAILED",
-                        "Adapter execution failed: "
-                                + exception.getMessage(),
-                        TaskFailureReason.TRANSPORT_ERROR
-                );
-            }
-
-            adapter.reportResult(result);
-
-            DispatchResult dispatchResult =
-                    new DispatchResult(
-                            nodeId,
-                            nodeName,
+                    taskJournal.completed(
+                            task.id(),
                             result
                     );
 
-            lastResult = dispatchResult;
+                    System.out.printf(
+                            "[Dispatcher] Task completed: status=%s%n",
+                            result.status()
+                    );
 
-            if (result.isSuccess()) {
-                pendingQueue.remove(task.id());
-                taskJournal.completed(
-                        task.id(),
-                        result
-                );
+                    return new Outcome.Completed(
+                            dispatchResult
+                    );
+                }
 
                 System.out.printf(
-                        "[Dispatcher] Task completed: status=%s%n",
-                        result.status()
-                );
-
-                return new Outcome.Completed(
-                        dispatchResult
-                );
-            }
-
-            System.out.printf(
-                    "[Recovery] Task %s failed on %s reason=%s%n",
-                    task.id(),
-                    nodeName,
-                    result.failureReason()
-            );
-
-            if (!recoveryManager.isRetryable(result)) {
-                taskJournal.completed(
-                        task.id(),
-                        result
-                );
-                return new Outcome.Completed(
-                        dispatchResult
-                );
-            }
-
-            excludedNodeIds.add(nodeId);
-
-            registry.get(nodeId).ifPresent(current -> {
-                if (current.state() == NodeStatus.ONLINE) {
-                    System.out.printf(
-                            "[Recovery] Node %s failed task %s -> DEGRADED%n",
-                            nodeName,
-                            task.id()
-                    );
-                    registry.markDegraded(nodeId);
-                }
-            });
-
-            if (attempt < recoveryManager.maxAttempts()) {
-                taskJournal.retrying(
+                        "[Recovery] Task %s failed on %s reason=%s%n",
                         task.id(),
                         nodeName,
-                        attempt + 1,
-                        result.failureReason().name()
+                        result.failureReason()
                 );
+
+                if (!recoveryManager.isRetryable(result)) {
+
+                    taskJournal.completed(
+                            task.id(),
+                            result
+                    );
+
+                    return new Outcome.Completed(
+                            dispatchResult
+                    );
+                }
+
+                /*
+                 * Reservation has not been released yet here.
+                 *
+                 * It is released automatically when this try-with-resources
+                 * block exits, before the next recovery attempt can begin.
+                 */
+                excludedNodeIds.add(
+                        nodeId
+                );
+
+                registry.get(nodeId).ifPresent(current -> {
+
+                    if (current.state()
+                            == NodeStatus.ONLINE) {
+
+                        System.out.printf(
+                                "[Recovery] Node %s failed "
+                                        + "task %s -> DEGRADED%n",
+                                nodeName,
+                                task.id()
+                        );
+
+                        registry.markDegraded(
+                                nodeId
+                        );
+                    }
+                });
+
+                if (attempt
+                        < recoveryManager.maxAttempts()) {
+
+                    taskJournal.retrying(
+                            task.id(),
+                            nodeName,
+                            attempt + 1,
+                            result.failureReason().name()
+                    );
+                }
             }
         }
 
         if (lastResult != null) {
+
             taskJournal.completed(
                     task.id(),
                     lastResult.result()
             );
+
             System.out.printf(
                     "[Recovery] Task %s exhausted %d attempt(s)%n",
                     task.id(),
                     recoveryManager.maxAttempts()
             );
-            return new Outcome.Completed(lastResult);
+
+            return new Outcome.Completed(
+                    lastResult
+            );
         }
 
         taskJournal.waiting(
                 task.id(),
                 TaskFailureReason.NO_ELIGIBLE_NODE.name()
         );
+
         pendingQueue.enqueue(task);
-        return new Outcome.Waiting(task.id());
+
+        return new Outcome.Waiting(
+                task.id()
+        );
     }
 
     public sealed interface Outcome
             permits Outcome.Completed, Outcome.Waiting {
 
-        record Completed(DispatchResult result)
-                implements Outcome {}
+        record Completed(
+                DispatchResult result
+        ) implements Outcome {}
 
-        record Waiting(String taskId)
-                implements Outcome {}
+        record Waiting(
+                String taskId
+        ) implements Outcome {}
     }
 }
