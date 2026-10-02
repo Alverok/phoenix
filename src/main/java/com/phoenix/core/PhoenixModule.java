@@ -77,6 +77,15 @@ public class PhoenixModule extends AbstractModule {
         bind(NodeHealthMonitor.class).in(Singleton.class);
 
         /*
+         * #28:
+         * Transport-neutral task lifecycle ledger and timeout semantics.
+         * Singletons so every transport reports into, and every consumer
+         * reads from, the same Core-owned state.
+         */
+        bind(TaskLifecycleService.class).in(Singleton.class);
+        bind(TaskTimeoutPolicy.class).in(Singleton.class);
+
+        /*
          * #27:
          * Core-owned placement reservation state.
          *

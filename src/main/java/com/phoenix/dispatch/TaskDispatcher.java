@@ -163,9 +163,10 @@ public class TaskDispatcher {
              *   - timeout result
              *   - interruption/other RuntimeException
              *
-             * #28 will later refine the meaning of the execution lifecycle,
-             * but #27 deliberately follows the current synchronous adapter
-             * contract.
+             * The adapter call is still synchronous (#27). Since #28 the
+             * transport classifies timeouts: DELIVERY_TIMEOUT (never reached
+             * a node that is still in contact) vs EXECUTION_TIMEOUT (reached
+             * the node, no result). The reservation covers both phases.
              */
             try (PlacementReservationService.Reservation reservation =
                          reserved.get()) {
@@ -303,23 +304,49 @@ public class TaskDispatcher {
                         nodeId
                 );
 
-                registry.get(nodeId).ifPresent(current -> {
+                /*
+                 * Issue #28: re-placement and node-health penalty are
+                 * separate decisions.
+                 *
+                 * Every retryable failure re-places the task, but only
+                 * failures that implicate the node degrade it. A
+                 * DELIVERY_TIMEOUT means the task sat in the transport
+                 * queue of a node that is still in contact; that is
+                 * ordinary backlog, not evidence the node has failed.
+                 * Genuinely unreachable or silent nodes (NODE_UNREACHABLE,
+                 * EXECUTION_TIMEOUT, TIMEOUT, ...) are still degraded
+                 * exactly as before.
+                 */
+                if (result.implicatesNodeHealth()) {
 
-                    if (current.state()
-                            == NodeStatus.ONLINE) {
+                    registry.get(nodeId).ifPresent(current -> {
 
-                        System.out.printf(
-                                "[Recovery] Node %s failed "
-                                        + "task %s -> DEGRADED%n",
-                                nodeName,
-                                task.id()
-                        );
+                        if (current.state()
+                                == NodeStatus.ONLINE) {
 
-                        registry.markDegraded(
-                                nodeId
-                        );
-                    }
-                });
+                            System.out.printf(
+                                    "[Recovery] Node %s failed "
+                                            + "task %s -> DEGRADED%n",
+                                    nodeName,
+                                    task.id()
+                            );
+
+                            registry.markDegraded(
+                                    nodeId
+                            );
+                        }
+                    });
+
+                } else {
+
+                    System.out.printf(
+                            "[Recovery] Task %s was not delivered to %s "
+                                    + "(reason=%s); node health unaffected%n",
+                            task.id(),
+                            nodeName,
+                            result.failureReason()
+                    );
+                }
 
                 if (attempt
                         < recoveryManager.maxAttempts()) {

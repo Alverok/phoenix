@@ -247,6 +247,56 @@ Example:
 }
 ```
 
+A result is accepted only for a task whose current attempt has actually been
+delivered to a node. A late result for an attempt Phoenix already gave up on
+(or re-queued elsewhere) is answered with `404 unknown_task`.
+
+### Execution start acknowledgement (optional)
+
+`POST /tasks/started`
+
+```json
+{ "taskId": "task-001" }
+```
+
+Sent by the agent right after it begins executing a task it polled. It is
+**optional**: agents that never send it keep working, and Phoenix simply
+reports the start as unacknowledged. Returns `404 unknown_task` for a task
+that has not been delivered.
+
+## Task lifecycle and timeout semantics
+
+Phoenix no longer uses one end-to-end timer from queue submission to result.
+A timeout can mean three different things, and Core now tells them apart
+through a transport-neutral lifecycle contract (see `NodeAgentClient`):
+
+```text
+ACCEPTED -> DELIVERED -> STARTED -> COMPLETED
+    \            \           \
+     +------------+-----------+--> FAILED
+```
+
+| Situation                                     | Failure reason      | Re-placed? | Node marked `DEGRADED`? |
+| --------------------------------------------- | ------------------- | ---------- | ----------------------- |
+| Never delivered, node still polling (backlog) | `DELIVERY_TIMEOUT`  | Yes        | **No**                  |
+| Never delivered, node not in contact          | `NODE_UNREACHABLE`  | Yes        | Yes                     |
+| Delivered, no result in time                  | `EXECUTION_TIMEOUT` | Yes        | Yes                     |
+| Transport that cannot tell the phases apart   | `TIMEOUT`           | Yes        | Yes (conservative)      |
+
+Ordinary queue backlog on a healthy node is therefore no longer treated as
+evidence that the node failed, while genuinely unreachable or silent nodes
+are detected exactly as before. Node health itself is still owned by
+heartbeat monitoring (`NodeHealthMonitor`); task timeouts only influence it
+when the failure actually implicates the node.
+
+Tunable system properties (seconds):
+
+| Property                         | Default | Meaning                                                              |
+| -------------------------------- | ------- | -------------------------------------------------------------------- |
+| `phoenix.deliveryTimeoutSeconds` | 60      | Max time a task may wait for the node to take it                     |
+| `phoenix.taskTimeoutSeconds`     | 12      | Max time **after delivery** for a result (was end-to-end before #28) |
+| `phoenix.contactLivenessSeconds` | 15      | How recently a node must have polled to count as "in contact"        |
+
 ## Why HTTP pull is used now
 
 The current HTTP implementation is deliberately not the final transport design.
@@ -365,6 +415,7 @@ The goal is to evaluate advanced scheduling against measured behavior rather tha
 | Result return to Phoenix                 | Working     |
 | Linux native/remote agent                | In progress |
 | Failure-aware task rescheduling          | In progress |
+| Delivery vs execution timeout semantics  | Working     |
 | MQTT transport                           | Planned     |
 | TLS-secured transport                    | Planned     |
 | ESP32 real execution agent               | Future      |
