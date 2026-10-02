@@ -74,6 +74,7 @@ public class RegistrationServer {
         server.createContext("/register", this::handleRegister);
         server.createContext("/heartbeat", this::handleHeartbeat);
         server.createContext("/tasks/poll", this::handlePoll);
+        server.createContext("/tasks/started", this::handleStarted);
         server.createContext("/results", this::handleResult);
 
         // The built-in executor is sufficient for this lightweight prototype.
@@ -84,6 +85,13 @@ public class RegistrationServer {
                 "[RegistrationServer] Listening for Phoenix Node Agents on port "
                         + port
         );
+    }
+
+    /** Actual bound port (useful when started on port 0), or -1 if stopped. */
+    public int port() {
+        return server == null
+                ? -1
+                : server.getAddress().getPort();
     }
 
     public void stop() {
@@ -409,6 +417,11 @@ public class RegistrationServer {
                 return;
                 }
 
+                // Issue #28: a polling node is a reachable node, whether or not
+                // Core currently hands it work. This is the transport's contact
+                // evidence for telling queue backlog from an unreachable node.
+                taskQueue.recordPoll(deviceId);
+
                 Optional<NodeRecord> record = nodeTelemetryService.get(nodeId);
                 if (record.isEmpty() || record.get().state() != NodeStatus.ONLINE) {
                 exchange.sendResponseHeaders(204, -1);
@@ -436,6 +449,62 @@ public class RegistrationServer {
                 sendJson(exchange, 500, "{\"status\":\"error\",\"message\":\"" + escapeJson(e.getMessage()) + "\"}");
         }
         }
+
+    /**
+     * Optional node acknowledgement that execution of a delivered task began.
+     *
+     * POST /tasks/started   {"taskId": "task-001"}
+     *
+     * Agents that do not send this still work: Core then measures the
+     * execution timeout from delivery and reports the start as unacknowledged.
+     */
+    private void handleStarted(HttpExchange exchange) throws IOException {
+        if (!"POST".equalsIgnoreCase(exchange.getRequestMethod())) {
+            exchange.sendResponseHeaders(405, -1);
+            return;
+        }
+
+        try {
+            StartedBody started =
+                    gson.fromJson(readBody(exchange), StartedBody.class);
+
+            if (started == null
+                    || started.taskId == null
+                    || started.taskId.isBlank()) {
+
+                sendJson(
+                        exchange,
+                        400,
+                        "{\"status\":\"error\",\"message\":\"invalid_started\"}"
+                );
+                return;
+            }
+
+            if (!taskQueue.markStarted(started.taskId)) {
+                sendJson(
+                        exchange,
+                        404,
+                        "{\"status\":\"error\",\"message\":\"unknown_task\"}"
+                );
+                return;
+            }
+
+            sendJson(exchange, 200, "{\"status\":\"ok\"}");
+
+        } catch (Exception exception) {
+            sendJson(
+                    exchange,
+                    400,
+                    "{\"status\":\"error\",\"message\":\""
+                            + escapeJson(exception.getMessage())
+                            + "\"}"
+            );
+        }
+    }
+
+    private static class StartedBody {
+        String taskId;
+    }
 
     /**
      * Extract a single URL query parameter.

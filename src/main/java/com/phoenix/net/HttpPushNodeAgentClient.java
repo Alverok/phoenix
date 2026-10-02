@@ -3,12 +3,15 @@ package com.phoenix.net;
 import java.io.IOException;
 import java.io.OutputStream;
 import java.net.HttpURLConnection;
+import java.net.SocketTimeoutException;
 import java.net.URL;
 import java.nio.charset.StandardCharsets;
 
 import com.google.gson.Gson;
 import com.google.inject.Inject;
 import com.google.inject.Singleton;
+import com.phoenix.core.TaskLifecycleService;
+import com.phoenix.core.TaskTimeoutPolicy;
 import com.phoenix.model.NodeExecutionTarget;
 import com.phoenix.model.TaskDescriptor;
 import com.phoenix.model.TaskFailureReason;
@@ -16,21 +19,64 @@ import com.phoenix.model.TaskResult;
 
 /**
  * Push-style transport for directly addressable LAN nodes such as Linux.
+ *
+ * <p>Issue #28:
+ *
+ * <p>Push transport has no Core-side task queue, so there is no separate
+ * delivery-wait phase like the HTTP pull transport. Once the HTTP connection
+ * is successfully established and the request body is submitted, the task is
+ * considered delivered. The shared {@link TaskTimeoutPolicy} then controls
+ * how long Phoenix waits for the execution result.
+ *
+ * <pre>
+ * accepted
+ *     |
+ *     v
+ * connect + submit
+ *     |
+ *     +-- connection failure -> NODE_UNREACHABLE
+ *     |
+ *     v
+ * delivered
+ *     |
+ *     +-- execution timeout -> EXECUTION_TIMEOUT
+ *     |
+ *     v
+ * result
+ *     |
+ *     +-- SUCCESS -> COMPLETED
+ *     +-- FAILED  -> FAILED
+ * </pre>
+ *
+ * <p>The connection timeout is a transport-level concern. The execution
+ * timeout is owned by {@link TaskTimeoutPolicy} so that all Phoenix transports
+ * share the same Core-level execution semantics.
  */
 @Singleton
 public class HttpPushNodeAgentClient
         implements NodeAgentClient {
 
+    /*
+     * Connection establishment is a transport concern rather than a task
+     * execution timeout. Five seconds bounds how long Core waits to establish
+     * a TCP connection to the directly-addressable node.
+     */
     private static final int CONNECT_TIMEOUT_MS = 5_000;
-    private static final int EXECUTE_TIMEOUT_MS = 35_000;
 
     private final RegistrationServer registrationServer;
+    private final TaskLifecycleService lifecycle;
+    private final TaskTimeoutPolicy timeouts;
     private final Gson gson = new Gson();
 
     @Inject
     public HttpPushNodeAgentClient(
-            RegistrationServer registrationServer) {
+            RegistrationServer registrationServer,
+            TaskLifecycleService lifecycle,
+            TaskTimeoutPolicy timeouts) {
+
         this.registrationServer = registrationServer;
+        this.lifecycle = lifecycle;
+        this.timeouts = timeouts;
     }
 
     @Override
@@ -70,19 +116,57 @@ public class HttpPushNodeAgentClient
                 callbackAddress.get()
         );
 
+        /*
+         * Push has no Core-side queue.
+         *
+         * The transport has accepted responsibility for this execution
+         * attempt once execute() begins processing a valid target.
+         */
+        lifecycle.accepted(task.id());
+
+        /*
+         * This flag separates connection/delivery failure from failures that
+         * happen after the task has reached the node.
+         */
+        boolean delivered = false;
+
         try {
             HttpURLConnection conn =
                     (HttpURLConnection) new URL(url).openConnection();
 
             conn.setRequestMethod("POST");
+
+            /*
+             * Connection timeout is intentionally not controlled by
+             * TaskTimeoutPolicy. It answers a different question:
+             *
+             * "Can Phoenix establish communication with this directly
+             * addressable node?"
+             */
             conn.setConnectTimeout(CONNECT_TIMEOUT_MS);
-            conn.setReadTimeout(EXECUTE_TIMEOUT_MS);
+
+            /*
+             * Execution timeout IS controlled by Core's shared policy.
+             *
+             * This replaces the old hard-coded 35-second timeout.
+             */
+            conn.setReadTimeout(
+                    Math.toIntExact(
+                            timeouts.executionTimeout().toMillis()
+                    )
+            );
+
             conn.setRequestProperty(
                     "Content-Type",
                     "application/json"
             );
+
             conn.setDoOutput(true);
 
+            /*
+             * Writing the request establishes communication with the node.
+             * If this fails, the task was never delivered.
+             */
             try (OutputStream os = conn.getOutputStream()) {
                 os.write(
                         requestBody.getBytes(
@@ -91,7 +175,20 @@ public class HttpPushNodeAgentClient
                 );
             }
 
+            /*
+             * At this point the request has been handed to the remote HTTP
+             * endpoint. Push transport has no explicit application-level
+             * delivery acknowledgement, so successful request submission is
+             * our delivery boundary.
+             */
+            delivered = true;
+            lifecycle.delivered(task.id());
+
+            /*
+             * From this point onward, waiting is execution waiting.
+             */
             int code = conn.getResponseCode();
+
             var stream = code == 200
                     ? conn.getInputStream()
                     : conn.getErrorStream();
@@ -103,7 +200,13 @@ public class HttpPushNodeAgentClient
                             StandardCharsets.UTF_8
                     );
 
+            /*
+             * An HTTP error means the node received the request but the
+             * execution attempt did not complete successfully.
+             */
             if (code != 200) {
+                lifecycle.failed(task.id());
+
                 return new TaskResult(
                         task.id(),
                         "FAILED",
@@ -124,12 +227,26 @@ public class HttpPushNodeAgentClient
                     );
 
             if (body == null || body.status == null) {
+                lifecycle.failed(task.id());
+
                 return new TaskResult(
                         task.id(),
                         "FAILED",
                         "Node returned an invalid result body",
                         TaskFailureReason.TRANSPORT_ERROR
                 );
+            }
+
+            /*
+             * Lifecycle state must reflect the actual result status.
+             *
+             * SUCCESS -> COMPLETED
+             * anything else -> FAILED
+             */
+            if ("SUCCESS".equalsIgnoreCase(body.status)) {
+                lifecycle.completed(task.id());
+            } else {
+                lifecycle.failed(task.id());
             }
 
             return new TaskResult(
@@ -141,7 +258,58 @@ public class HttpPushNodeAgentClient
                             : TaskFailureReason.EXECUTION_ERROR
             );
 
+        } catch (SocketTimeoutException exception) {
+
+            lifecycle.failed(task.id());
+
+            /*
+             * SocketTimeoutException can represent either:
+             *
+             * 1. connection establishment timing out
+             * 2. result/execution read timing out
+             *
+             * The delivered flag tells us which phase we were in.
+             */
+            if (delivered) {
+                return new TaskResult(
+                        task.id(),
+                        "FAILED",
+                        "No result from "
+                                + target.displayName()
+                                + " within "
+                                + timeouts.executionTimeout().toSeconds()
+                                + "s of delivery",
+                        TaskFailureReason.EXECUTION_TIMEOUT
+                );
+            }
+
+            return new TaskResult(
+                    task.id(),
+                    "FAILED",
+                    "Push to "
+                            + target.displayName()
+                            + " failed before delivery: "
+                            + exception.getMessage(),
+                    TaskFailureReason.NODE_UNREACHABLE
+            );
+
         } catch (IOException exception) {
+
+            lifecycle.failed(task.id());
+
+            /*
+             * If delivery never happened, the node could not be reached.
+             *
+             * If delivery already happened, however, an arbitrary I/O failure
+             * does not necessarily mean the node is unreachable. The request
+             * may have executed and the connection may simply have failed
+             * while returning the result. Treat that as a transport failure.
+             */
+            TaskFailureReason reason =
+                    delivered
+                            ? TaskFailureReason.TRANSPORT_ERROR
+                            : TaskFailureReason.NODE_UNREACHABLE;
+
             return new TaskResult(
                     task.id(),
                     "FAILED",
@@ -149,7 +317,7 @@ public class HttpPushNodeAgentClient
                             + target.displayName()
                             + " failed: "
                             + exception.getMessage(),
-                    TaskFailureReason.NODE_UNREACHABLE
+                    reason
             );
         }
     }
