@@ -30,9 +30,12 @@ public enum TaskLifecycleState {
     DELIVERED,
     STARTED,
     COMPLETED,
-    FAILED;
+    FAILED,
+    ABANDONED;
 
     public boolean isTerminal() {
-        return this == COMPLETED || this == FAILED;
+        return this == COMPLETED ||
+               this == FAILED ||
+               this == ABANDONED;
     }
 }

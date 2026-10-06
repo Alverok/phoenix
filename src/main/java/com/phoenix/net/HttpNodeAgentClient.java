@@ -6,6 +6,7 @@ import java.util.concurrent.TimeoutException;
 
 import com.google.inject.Inject;
 import com.google.inject.Singleton;
+import com.phoenix.core.AttemptAbandonedException;
 import com.phoenix.core.TaskLifecycleService;
 import com.phoenix.core.TaskTimeoutPolicy;
 import com.phoenix.model.NodeExecutionTarget;
@@ -27,6 +28,12 @@ import com.phoenix.model.TaskResult;
  *             '-- delivered -> awaitResult(executionTimeout)
  *                               '-- no result        -> EXECUTION_TIMEOUT
  * </pre>
+ *
+ * <p>In-flight reconciliation: at <em>any</em> point in that sequence Core
+ * may abandon the attempt because the node was declared OFFLINE. The waiting
+ * thread is then woken immediately and returns
+ * {@link TaskFailureReason#NODE_OFFLINE} instead of sleeping until its
+ * timeout expires.
  *
  * <p>The timeout values and the backlog-vs-unreachable rule come from
  * {@link TaskTimeoutPolicy}; this class only applies them to what the HTTP
@@ -74,10 +81,12 @@ public class HttpNodeAgentClient
             );
         }
 
-        taskQueue.submit(
-                deviceId.get(),
-                task
-        );
+        TaskLifecycleService.Attempt attempt =
+                taskQueue.submit(
+                        target.nodeId(),
+                        deviceId.get(),
+                        task
+                );
 
         System.out.printf(
                 "[HttpNodeAgentClient] Queued %s for %s; waiting for delivery...%n",
@@ -106,11 +115,14 @@ public class HttpNodeAgentClient
                  * received this attempt. Whether the node is merely busy
                  * or actually gone is decided from its recent contact.
                  */
-                return undelivered(
-                        target,
-                        task,
-                        deviceId.get()
-                );
+                return attempt.isAbandoned()
+                        ? nodeOffline(target, task)
+                        : undelivered(
+                                target,
+                                task,
+                                attempt,
+                                deviceId.get()
+                        );
             }
 
             /*
@@ -123,9 +135,22 @@ public class HttpNodeAgentClient
                     timeouts.executionTimeout()
             );
 
+        } catch (AttemptAbandonedException exception) {
+
+            /*
+             * Core declared the node OFFLINE while this attempt was queued,
+             * delivered, or executing. The queue entry was already withdrawn
+             * by the abandon hook; the ledger already says ABANDONED.
+             */
+            return nodeOffline(target, task);
+
         } catch (TimeoutException exception) {
 
-            lifecycle.failed(task.id());
+            if (attempt.isAbandoned()) {
+                return nodeOffline(target, task);
+            }
+
+            lifecycle.failed(attempt);
 
             return new TaskResult(
                     task.id(),
@@ -146,7 +171,7 @@ public class HttpNodeAgentClient
                     deviceId.get(),
                     task.id()
             );
-            lifecycle.failed(task.id());
+            lifecycle.failed(attempt);
 
             return new TaskResult(
                     task.id(),
@@ -161,7 +186,7 @@ public class HttpNodeAgentClient
                     deviceId.get(),
                     task.id()
             );
-            lifecycle.failed(task.id());
+            lifecycle.failed(attempt);
 
             return new TaskResult(
                     task.id(),
@@ -182,6 +207,7 @@ public class HttpNodeAgentClient
     private TaskResult undelivered(
             NodeExecutionTarget target,
             TaskDescriptor task,
+            TaskLifecycleService.Attempt attempt,
             String deviceId) {
 
         Optional<Duration> sinceContact =
@@ -190,7 +216,7 @@ public class HttpNodeAgentClient
         TaskFailureReason reason =
                 timeouts.classifyUndelivered(sinceContact);
 
-        lifecycle.failed(task.id());
+        lifecycle.failed(attempt);
 
         String message =
                 reason == TaskFailureReason.DELIVERY_TIMEOUT
@@ -216,6 +242,36 @@ public class HttpNodeAgentClient
                 "FAILED",
                 message,
                 reason
+        );
+    }
+
+    /**
+     * Result for an attempt Core abandoned because its node went OFFLINE.
+     * The message records how far the attempt had got, because that is what
+     * an operator needs to judge whether the node may have run the task.
+     */
+    private TaskResult nodeOffline(
+            NodeExecutionTarget target,
+            TaskDescriptor task) {
+
+        String phase =
+                lifecycle.snapshot(task.id())
+                        .map(snapshot -> snapshot.startAcknowledged()
+                                ? "executing it"
+                                : snapshot.reachedNode()
+                                        ? "holding it (delivered)"
+                                        : "queued and undelivered")
+                        .orElse("in flight");
+
+        return new TaskResult(
+                task.id(),
+                "FAILED",
+                "Node "
+                        + target.displayName()
+                        + " went OFFLINE while "
+                        + phase
+                        + "; attempt abandoned",
+                TaskFailureReason.NODE_OFFLINE
         );
     }
 

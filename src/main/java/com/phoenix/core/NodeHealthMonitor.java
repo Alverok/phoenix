@@ -1,6 +1,8 @@
 package com.phoenix.core;
 
 import java.time.Instant;
+import java.util.List;
+import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.Executors;
 import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.TimeUnit;
@@ -27,6 +29,11 @@ import com.phoenix.model.NodeStatus;
  *
  * <p>No transport-specific code belongs here. HTTP, MQTT, or any future
  * transport only needs to feed heartbeat data into the common telemetry path.
+ *
+ * <p>OFFLINE is the one transition other Core components may need to react
+ * to (for example, reconciling task attempts that were executing on the node).
+ * They subscribe through {@link #addOfflineListener(NodeOfflineListener)}
+ * (Observer pattern) instead of this class knowing about them.
  */
 @Singleton
 public class NodeHealthMonitor {
@@ -38,11 +45,25 @@ public class NodeHealthMonitor {
 
     private final DeviceRegistry deviceRegistry;
 
+    private final List<NodeOfflineListener> offlineListeners =
+            new CopyOnWriteArrayList<>();
+
     private ScheduledExecutorService executor;
 
     @Inject
     public NodeHealthMonitor(DeviceRegistry deviceRegistry) {
         this.deviceRegistry = deviceRegistry;
+    }
+
+    /**
+     * Subscribe to OFFLINE transitions.
+     *
+     * <p>Listeners are notified after the registry has been updated, once per
+     * transition, on the monitor thread. A failing listener never prevents
+     * other listeners, or the lifecycle evaluation itself, from running.
+     */
+    public void addOfflineListener(NodeOfflineListener listener) {
+        offlineListeners.add(listener);
     }
 
     /**
@@ -134,6 +155,7 @@ public class NodeHealthMonitor {
                     );
 
                     deviceRegistry.markOffline(nodeId);
+                    notifyOffline(record);
                 }
 
                 continue;
@@ -150,6 +172,22 @@ public class NodeHealthMonitor {
                 );
 
                 deviceRegistry.markDegraded(nodeId);
+            }
+        }
+    }
+
+    private void notifyOffline(NodeRecord record) {
+        for (NodeOfflineListener listener : offlineListeners) {
+            try {
+                listener.onNodeOffline(
+                        record.nodeId(),
+                        record.info().displayName()
+                );
+            } catch (RuntimeException exception) {
+                System.err.println(
+                        "[NodeHealthMonitor] Offline listener failed: "
+                                + exception
+                );
             }
         }
     }

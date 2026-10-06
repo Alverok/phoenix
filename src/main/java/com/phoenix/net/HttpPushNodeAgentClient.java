@@ -107,7 +107,8 @@ public class HttpPushNodeAgentClient
                         + escape(task.id())
                         + "\",\"type\":\""
                         + escape(task.type())
-                        + "\",\"samples\":2000000}";
+                        + "\",\"samples\":2000000"
+                        + "@@ATTEMPT@@}";
 
         System.out.printf(
                 "[HttpPushNodeAgentClient] Pushing %s directly to %s (%s)%n",
@@ -122,7 +123,16 @@ public class HttpPushNodeAgentClient
          * The transport has accepted responsibility for this execution
          * attempt once execute() begins processing a valid target.
          */
-        lifecycle.accepted(task.id());
+        TaskLifecycleService.Attempt attempt =
+                lifecycle.accepted(task.id(), target.nodeId());
+
+        /*
+         * Optional attempt identifier for nodes that echo it back.
+         */
+        requestBody = requestBody.replace(
+                "@@ATTEMPT@@",
+                AttemptWire.jsonField(attempt.number())
+        );
 
         /*
          * This flag separates connection/delivery failure from failures that
@@ -135,6 +145,13 @@ public class HttpPushNodeAgentClient
                     (HttpURLConnection) new URL(url).openConnection();
 
             conn.setRequestMethod("POST");
+
+            /*
+             * In-flight reconciliation: if Core declares the node OFFLINE
+             * while this thread is blocked on the node, closing the socket
+             * is the only way to wake it before the execution timeout.
+             */
+            attempt.onAbandon(conn::disconnect);
 
             /*
              * Connection timeout is intentionally not controlled by
@@ -163,6 +180,10 @@ public class HttpPushNodeAgentClient
 
             conn.setDoOutput(true);
 
+            if (attempt.isAbandoned()) {
+                return nodeOffline(target, task);
+            }
+
             /*
              * Writing the request establishes communication with the node.
              * If this fails, the task was never delivered.
@@ -182,7 +203,7 @@ public class HttpPushNodeAgentClient
              * our delivery boundary.
              */
             delivered = true;
-            lifecycle.delivered(task.id());
+            lifecycle.delivered(attempt);
 
             /*
              * From this point onward, waiting is execution waiting.
@@ -205,7 +226,7 @@ public class HttpPushNodeAgentClient
              * execution attempt did not complete successfully.
              */
             if (code != 200) {
-                lifecycle.failed(task.id());
+                lifecycle.failed(attempt);
 
                 return new TaskResult(
                         task.id(),
@@ -227,7 +248,7 @@ public class HttpPushNodeAgentClient
                     );
 
             if (body == null || body.status == null) {
-                lifecycle.failed(task.id());
+                lifecycle.failed(attempt);
 
                 return new TaskResult(
                         task.id(),
@@ -244,9 +265,9 @@ public class HttpPushNodeAgentClient
              * anything else -> FAILED
              */
             if ("SUCCESS".equalsIgnoreCase(body.status)) {
-                lifecycle.completed(task.id());
+                lifecycle.completed(attempt);
             } else {
-                lifecycle.failed(task.id());
+                lifecycle.failed(attempt);
             }
 
             return new TaskResult(
@@ -260,7 +281,11 @@ public class HttpPushNodeAgentClient
 
         } catch (SocketTimeoutException exception) {
 
-            lifecycle.failed(task.id());
+            if (attempt.isAbandoned()) {
+                return nodeOffline(target, task);
+            }
+
+            lifecycle.failed(attempt);
 
             /*
              * SocketTimeoutException can represent either:
@@ -295,7 +320,15 @@ public class HttpPushNodeAgentClient
 
         } catch (IOException exception) {
 
-            lifecycle.failed(task.id());
+            /*
+             * A disconnect() issued by the abandon hook surfaces here as a
+             * "socket closed" IOException. That is not a transport failure.
+             */
+            if (attempt.isAbandoned()) {
+                return nodeOffline(target, task);
+            }
+
+            lifecycle.failed(attempt);
 
             /*
              * If delivery never happened, the node could not be reached.
@@ -320,6 +353,22 @@ public class HttpPushNodeAgentClient
                     reason
             );
         }
+    }
+
+    /** Result for an attempt Core abandoned because its node went OFFLINE. */
+    private TaskResult nodeOffline(
+            NodeExecutionTarget target,
+            TaskDescriptor task) {
+
+        return new TaskResult(
+                task.id(),
+                "FAILED",
+                "Node "
+                        + target.displayName()
+                        + " went OFFLINE during push execution; "
+                        + "attempt abandoned",
+                TaskFailureReason.NODE_OFFLINE
+        );
     }
 
     private static String escape(String value) {

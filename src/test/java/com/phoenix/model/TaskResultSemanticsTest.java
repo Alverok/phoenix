@@ -34,14 +34,19 @@ class TaskResultSemanticsTest {
                     TaskFailureReason.NO_ELIGIBLE_NODE
             );
 
-    /** Retryable failures that are evidence against the node. */
+    /**
+     * Retryable failures that are evidence against the node.
+     *
+     * <p>NODE_OFFLINE is deliberately absent: it is derived from node
+     * health (the node was already declared OFFLINE), so it must not be fed
+     * back into node health.
+     */
     private static final Set<TaskFailureReason> IMPLICATE_NODE =
             EnumSet.of(
                     TaskFailureReason.TIMEOUT,
                     TaskFailureReason.EXECUTION_TIMEOUT,
                     TaskFailureReason.NODE_UNREACHABLE,
-                    TaskFailureReason.TRANSPORT_ERROR,
-                    TaskFailureReason.NODE_OFFLINE
+                    TaskFailureReason.TRANSPORT_ERROR
             );
 
     private static TaskResult resultWith(TaskFailureReason reason) {
@@ -89,11 +94,22 @@ class TaskResultSemanticsTest {
     }
 
     @Test
+    void nodeOfflineIsRetryableButDoesNotImplicateTheNode() {
+
+        TaskResult result =
+                resultWith(TaskFailureReason.NODE_OFFLINE);
+
+        assertTrue(result.isRetryable());
+        assertFalse(result.implicatesNodeHealth());
+    }
+
+    @Test
     void everyOtherRetryableFailureStillImplicatesTheNode() {
 
         for (TaskFailureReason reason : RETRYABLE) {
 
-            if (reason == TaskFailureReason.DELIVERY_TIMEOUT) {
+            if (reason == TaskFailureReason.DELIVERY_TIMEOUT
+                    || reason == TaskFailureReason.NODE_OFFLINE) {
                 continue;
             }
 

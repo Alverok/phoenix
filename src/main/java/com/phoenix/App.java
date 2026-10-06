@@ -2,6 +2,7 @@ package com.phoenix;
 
 import com.google.inject.Guice;
 import com.google.inject.Injector;
+import com.phoenix.core.InFlightAttemptReconciler;
 import com.phoenix.core.NodeHealthMonitor;
 import com.phoenix.core.PhoenixModule;
 import com.phoenix.dispatch.TaskAdmission;
@@ -34,6 +35,14 @@ public class App {
                 injector.getInstance(
                         NodeHealthMonitor.class
                 );
+
+        InFlightAttemptReconciler inFlightReconciler =
+                injector.getInstance(
+                        InFlightAttemptReconciler.class
+                );
+
+        // Subscribe before any node can be declared OFFLINE.
+        inFlightReconciler.start();
 
         server.start(
                 REGISTRATION_PORT

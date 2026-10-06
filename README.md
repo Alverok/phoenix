@@ -297,6 +297,82 @@ Tunable system properties (seconds):
 | `phoenix.taskTimeoutSeconds`     | 12      | Max time **after delivery** for a result (was end-to-end before #28) |
 | `phoenix.contactLivenessSeconds` | 15      | How recently a node must have polled to count as "in contact"        |
 
+### Node `OFFLINE` and in-flight tasks
+
+Timeouts decide what to do when a node is merely _slow_. A node that
+`NodeHealthMonitor` declares **OFFLINE** is different: Core has decided it is
+gone, so it stops waiting for it.
+
+```text
+ONLINE --(20s no heartbeat)--> DEGRADED --(60s no heartbeat)--> OFFLINE
+                                  |                                |
+                     suspicion only: nothing                 decision: every
+                     in flight is touched                    in-flight attempt on
+                                                             the node is abandoned
+```
+
+When a node goes `OFFLINE`, every attempt bound to it that has not finished
+(queued, delivered or executing) is **abandoned** immediately instead of
+waiting for its delivery/execution timeout. The blocked transport wakes up and
+returns `NODE_OFFLINE`; the unchanged dispatcher then releases the placement
+reservation and re-places the task through the same `TaskAdmission` boundary as
+every other recovery.
+
+| Aspect                        | Behaviour                                                                                                        |
+| ----------------------------- | ---------------------------------------------------------------------------------------------------------------- |
+| Trigger                       | `OFFLINE` only. `DEGRADED` never cancels work: the node may still be running it                                  |
+| Retry                         | A **new attempt starts from the beginning** with its own fresh delivery/execution timeouts. No resume/checkpoint |
+| Priority                      | No special scheduler. The task keeps its FIFO place in `PendingTaskQueue` and competes through normal admission  |
+| Other nodes                   | Untouched. Only attempts bound to the OFFLINE node are abandoned                                                 |
+| Single node                   | The task waits in `PendingTaskQueue` with a **fresh** `phoenix.noNodeWaitSeconds` window                         |
+| Node health                   | `NODE_OFFLINE` is derived from node health, so it is never fed back into it                                      |
+| Outcome of the old attempt    | `ABANDONED` = _unknown_. OFFLINE does not prove the computation stopped                                          |
+| Late result from the old node | Rejected (`404`); the abandoned task is also withdrawn from the node's queue                                     |
+
+Lifecycle with the new terminal state:
+
+```text
+ACCEPTED -> DELIVERED -> STARTED -> COMPLETED
+    \            \           \
+     +------------+-----------+--> FAILED      (known failure)
+     +------------+-----------+--> ABANDONED   (outcome unknown; node OFFLINE)
+```
+
+#### Recovery window and budget
+
+A task returned to waiting after a **failed attempt** gets a _fresh_
+`phoenix.noNodeWaitSeconds` window (time spent at a node that then failed is not
+time without a node) and keeps its place in line. A task that merely finds no
+node on a recovery tick keeps its original window, so genuinely unplaceable
+tasks still expire. Because a fresh window would otherwise allow endless
+bouncing, failure-driven returns to waiting are budgeted:
+
+| Property                    | Default | Meaning                                                          |
+| --------------------------- | ------- | ---------------------------------------------------------------- |
+| `phoenix.maxRecoveryCycles` | 3       | Failed-attempt cycles a task may go through before Core gives up |
+
+An expired task is given up only after one fresh placement attempt also found no
+eligible node.
+
+#### Optional attempt identifier on the wire
+
+Core always numbers attempts internally. To let Core reject a late message from
+an old attempt even after the task was re-delivered to _another_ node, Core can
+send the attempt number with the task and accept it back:
+
+```json
+{ "taskId": "task-001", "type": "Monte-Carlo-Pi", "samples": 2000000, "attempt": 2 }
+```
+
+```json
+{ "taskId": "task-001", "attempt": 2, "status": "SUCCESS", "outputData": "..." }
+```
+
+The same optional `attempt` field is accepted by `POST /tasks/started`. It is
+**off by default** (`-Dphoenix.attemptOnWire=true` enables it) because Phoenix
+cannot know whether every deployed agent tolerates an unknown JSON field.
+Agents that do not echo it keep working exactly as before.
+
 ## Why HTTP pull is used now
 
 The current HTTP implementation is deliberately not the final transport design.
@@ -416,6 +492,7 @@ The goal is to evaluate advanced scheduling against measured behavior rather tha
 | Linux native/remote agent                | In progress |
 | Failure-aware task rescheduling          | In progress |
 | Delivery vs execution timeout semantics  | Working     |
+| In-flight recovery on node OFFLINE       | Working     |
 | MQTT transport                           | Planned     |
 | TLS-secured transport                    | Planned     |
 | ESP32 real execution agent               | Future      |
