@@ -297,10 +297,12 @@ public class TaskAdmission {
                     pending.task().id();
 
             /*
-             * Expired work is removed independently so that one expired
-             * task cannot block younger pending work.
+             * A task that keeps failing attempts must not bounce between
+             * nodes forever. Each failed attempt starts a fresh waiting
+             * window, so the failure-driven recoveries are budgeted
+             * separately.
              */
-            if (pendingQueue.isExpired(pending)) {
+            if (pendingQueue.isExhausted(pending)) {
 
                 pendingQueue.remove(taskId);
 
@@ -309,25 +311,46 @@ public class TaskAdmission {
                         new TaskResult(
                                 taskId,
                                 "FAILED",
-                                "No eligible node within "
-                                        + pendingQueue.maxWait().toSeconds()
-                                        + "s",
-                                TaskFailureReason.NO_ELIGIBLE_NODE
+                                "Recovery exhausted after "
+                                        + pending.failedCycles()
+                                        + " failed attempt cycle(s); last failure: "
+                                        + pending.lastFailure(),
+                                pending.lastFailure() == null
+                                        ? TaskFailureReason.NO_ELIGIBLE_NODE
+                                        : pending.lastFailure()
                         )
                 );
 
                 System.out.printf(
-                        "[Recovery] %s gave up: no eligible node within %ds%n",
+                        "[Recovery] %s gave up: %d failed attempt cycle(s), "
+                                + "last failure %s%n",
                         taskId,
-                        pendingQueue.maxWait().toSeconds()
+                        pending.failedCycles(),
+                        pending.lastFailure()
                 );
 
+                continue;
+            }
+
+            /*
+             * The entry stays in the queue (it keeps its FIFO place) but is
+             * marked as being attempted, so its waiting clock is not
+             * mistaken for time spent without an eligible node.
+             */
+            if (!pendingQueue.claim(taskId)) {
                 continue;
             }
 
             try {
 
                 /*
+                 * Expiry is judged only AFTER a fresh placement attempt.
+                 * Recovery execution is synchronous on the admission thread,
+                 * so a long attempt earlier in this pass can make younger
+                 * pending tasks "expire" without ever having been evaluated.
+                 * Declaring "no eligible node" without looking would be
+                 * false whenever a node is in fact eligible.
+                 *
                  * Recovery execution remains synchronous here.
                  *
                  * This preserves the existing FIFO-preferred recovery
@@ -353,6 +376,34 @@ public class TaskAdmission {
                             completed.result()
                                     .nodeDisplayName()
                     );
+
+                } else if (pendingQueue.isExpired(taskId)) {
+
+                    /*
+                     * Still no eligible node after a real evaluation, and
+                     * the (live) waiting window has run out. Using the live
+                     * entry matters: an attempt that just failed has already
+                     * started a fresh window.
+                     */
+                    pendingQueue.remove(taskId);
+
+                    taskJournal.completed(
+                            taskId,
+                            new TaskResult(
+                                    taskId,
+                                    "FAILED",
+                                    "No eligible node within "
+                                            + pendingQueue.maxWait().toSeconds()
+                                            + "s",
+                                    TaskFailureReason.NO_ELIGIBLE_NODE
+                            )
+                    );
+
+                    System.out.printf(
+                            "[Recovery] %s gave up: no eligible node within %ds%n",
+                            taskId,
+                            pendingQueue.maxWait().toSeconds()
+                    );
                 }
 
                 /*
@@ -373,8 +424,9 @@ public class TaskAdmission {
 
                 /*
                  * Keep the task pending. The next recovery tick can try it
-                 * again.
+                 * again. Release the claim so it is not stuck "in flight".
                  */
+                pendingQueue.release(taskId);
             }
         }
     }

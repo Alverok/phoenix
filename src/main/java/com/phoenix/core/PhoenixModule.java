@@ -86,6 +86,13 @@ public class PhoenixModule extends AbstractModule {
         bind(TaskTimeoutPolicy.class).in(Singleton.class);
 
         /*
+         * In-flight reconciliation:
+         * observes NodeHealthMonitor's OFFLINE decision and abandons the
+         * task attempts that were running on that node.
+         */
+        bind(InFlightAttemptReconciler.class).in(Singleton.class);
+
+        /*
          * #27:
          * Core-owned placement reservation state.
          *

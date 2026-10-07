@@ -428,18 +428,20 @@ public class RegistrationServer {
                 return;
                 }
 
-                Optional<TaskDescriptor> task = taskQueue.poll(deviceId);
-                if (task.isEmpty()) {
+                Optional<TaskQueueService.Delivery> delivery = taskQueue.pollDelivery(deviceId);
+                if (delivery.isEmpty()) {
                 exchange.sendResponseHeaders(204, -1);
                 return;
                 }
 
-                TaskDescriptor descriptor = task.get();
+                TaskDescriptor descriptor = delivery.get().task();
                 // Hand-built JSON — sidesteps any Gson record-serialization surprises
                 // and matches the documented protocol shape exactly (id/type/samples).
                 String json = String.format(
-                        "{\"taskId\":\"%s\",\"type\":\"%s\",\"samples\":2000000}",
-                        escapeJson(descriptor.id()), escapeJson(descriptor.type()));
+                        "{\"taskId\":\"%s\",\"type\":\"%s\",\"samples\":2000000%s}",
+                        escapeJson(descriptor.id()), escapeJson(descriptor.type()),
+                        // Optional attempt identifier (off unless -Dphoenix.attemptOnWire=true)
+                        AttemptWire.jsonField(delivery.get().attempt()));
 
                 sendJson(exchange, 200, json);
 
@@ -480,7 +482,7 @@ public class RegistrationServer {
                 return;
             }
 
-            if (!taskQueue.markStarted(started.taskId)) {
+            if (!taskQueue.markStarted(started.taskId, started.attempt)) {
                 sendJson(
                         exchange,
                         404,
@@ -504,6 +506,9 @@ public class RegistrationServer {
 
     private static class StartedBody {
         String taskId;
+
+        /** Optional echo of the attempt number Core sent with the task. */
+        Integer attempt;
     }
 
     /**
@@ -573,7 +578,7 @@ public class RegistrationServer {
             );
 
             boolean matched =
-                    taskQueue.completeResult(result);
+                    taskQueue.completeResult(result, resultBody.attempt);
 
             if (!matched) {
                 sendJson(
@@ -622,6 +627,9 @@ public class RegistrationServer {
         String status;
         String outputData;
         long executionTimeMs;
+
+        /** Optional echo of the attempt number Core sent with the task. */
+        Integer attempt;
     }
 
     private static String readBody(

@@ -30,11 +30,21 @@ import com.phoenix.model.TaskResult;
  *         {@code NODE_UNREACHABLE}</li>
  *     <li>delivered, no result in time -> {@code EXECUTION_TIMEOUT}</li>
  *     <li>transport broke -> {@code TRANSPORT_ERROR}</li>
+ *     <li>Core abandoned the attempt because the node went OFFLINE ->
+ *         {@code NODE_OFFLINE}</li>
  * </ul>
  *
  * <p><b>3. Use the shared policy.</b> Timeout values and the
  * backlog-versus-unreachable decision come from
  * {@link com.phoenix.core.TaskTimeoutPolicy}, not from transport constants.
+ *
+ * <p><b>3b. Honour abandonment.</b> Bind the attempt to the node
+ * ({@code accepted(taskId, nodeId)}) and register a cancellation hook with
+ * {@link com.phoenix.core.TaskLifecycleService.Attempt#onAbandon(Runnable)}
+ * that releases whatever the transport is blocked on. When Core declares the
+ * node OFFLINE the hook runs; the transport then returns promptly with
+ * {@code NODE_OFFLINE} rather than waiting for a timeout. A late message from
+ * the node for an abandoned attempt must be ignored.
  *
  * <p><b>4. Degrade gracefully.</b> A transport that cannot distinguish the
  * phases returns {@code TIMEOUT} (unclassified). Core treats that

@@ -116,7 +116,16 @@ public class TaskDispatcher {
                                     .name()
                     );
 
-                    pendingQueue.enqueue(task);
+                    /*
+                     * An attempt ran and failed retryably: the task returns
+                     * to waiting with a FRESH waiting window and keeps its
+                     * FIFO position. The time spent at the node that failed
+                     * is not time spent without an eligible node.
+                     */
+                    pendingQueue.enqueue(
+                            task,
+                            lastResult.result().failureReason()
+                    );
 
                     System.out.printf(
                             "[Recovery] %s WAITING: "
@@ -340,7 +349,7 @@ public class TaskDispatcher {
                 } else {
 
                     System.out.printf(
-                            "[Recovery] Task %s was not delivered to %s "
+                            "[Recovery] Task %s attempt on %s ended "
                                     + "(reason=%s); node health unaffected%n",
                             task.id(),
                             nodeName,
@@ -363,13 +372,48 @@ public class TaskDispatcher {
 
         if (lastResult != null) {
 
+            if (recoveryManager.isRetryable(lastResult.result())) {
+                TaskFailureReason failure =
+                        lastResult.result().failureReason();
+
+                taskJournal.waiting(
+                        task.id(),
+                        failure.name()
+                );
+
+                /*
+                 * Every placement attempt in this call failed retryably.
+                 * The logical task must return to the common pending path,
+                 * not be reported as terminal merely because this one
+                 * placement cycle exhausted its alternative nodes.
+                 *
+                 * A non-null failure starts a fresh waiting window and
+                 * consumes one recovery cycle, while preserving FIFO
+                 * position in PendingTaskQueue.
+                 */
+                pendingQueue.enqueue(task, failure);
+
+                System.out.printf(
+                        "[Recovery] %s WAITING: exhausted %d retryable "
+                                + "placement attempt(s); last failure=%s%n",
+                        task.id(),
+                        recoveryManager.maxAttempts(),
+                        failure
+                );
+
+                return new Outcome.Waiting(
+                        task.id()
+                );
+            }
+
             taskJournal.completed(
                     task.id(),
                     lastResult.result()
             );
 
             System.out.printf(
-                    "[Recovery] Task %s exhausted %d attempt(s)%n",
+                    "[Recovery] Task %s exhausted %d attempt(s) with "
+                            + "non-retryable failure%n",
                     task.id(),
                     recoveryManager.maxAttempts()
             );

@@ -7,6 +7,7 @@ package com.phoenix.model;
  * ACCEPTED -> DELIVERED -> STARTED -> COMPLETED
  *     \            \           \
  *      +------------+-----------+--> FAILED
+ *      +------------+-----------+--> ABANDONED
  * </pre>
  *
  * <ul>
@@ -21,6 +22,10 @@ package com.phoenix.model;
  *         node-side failure).</li>
  *     <li>{@link #FAILED}    - the attempt ended without a node result
  *         (delivery/execution timeout, transport failure).</li>
+ *     <li>{@link #ABANDONED} - Core stopped waiting because the node was
+ *         declared OFFLINE. Unlike {@code FAILED} the node-side outcome is
+ *         <em>unknown</em>: the computation may still have run, and any late
+ *         message from the node for this attempt is ignored.</li>
  * </ul>
  *
  * <p>The state order is the declaration order; transitions never go backwards.
@@ -30,9 +35,12 @@ public enum TaskLifecycleState {
     DELIVERED,
     STARTED,
     COMPLETED,
-    FAILED;
+    FAILED,
+    ABANDONED;
 
     public boolean isTerminal() {
-        return this == COMPLETED || this == FAILED;
+        return this == COMPLETED ||
+               this == FAILED ||
+               this == ABANDONED;
     }
 }
