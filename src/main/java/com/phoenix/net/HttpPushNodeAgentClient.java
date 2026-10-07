@@ -141,8 +141,7 @@ public class HttpPushNodeAgentClient
         boolean delivered = false;
 
         try {
-            HttpURLConnection conn =
-                    (HttpURLConnection) new URL(url).openConnection();
+            HttpURLConnection conn = openConnection(url);
 
             conn.setRequestMethod("POST");
 
@@ -318,6 +317,27 @@ public class HttpPushNodeAgentClient
                     TaskFailureReason.NODE_UNREACHABLE
             );
 
+        } catch (RuntimeException exception) {
+
+            /*
+             * HttpURLConnection.disconnect() is not safe to race against a
+             * thread that is still inside getResponseCode(): the JDK can null
+             * its internal connection state mid-request and surface an
+             * unchecked NullPointerException instead of an IOException.
+             *
+             * If Core abandoned this attempt, that is the abandonment we
+             * asked for, not a transport failure, and it must not escape
+             * execute() (it would be misclassified as TRANSPORT_ERROR and
+             * would implicate the node's health).
+             *
+             * Anything else is a genuine programming error: rethrow it.
+             */
+            if (attempt.isAbandoned()) {
+                return nodeOffline(target, task);
+            }
+
+            throw exception;
+
         } catch (IOException exception) {
 
             /*
@@ -353,6 +373,16 @@ public class HttpPushNodeAgentClient
                     reason
             );
         }
+    }
+
+    /**
+     * Opens the connection to the node. Overridable so tests can simulate
+     * JDK-level behaviour that cannot be provoked deterministically.
+     */
+    protected HttpURLConnection openConnection(String url)
+            throws IOException {
+
+        return (HttpURLConnection) new URL(url).openConnection();
     }
 
     /** Result for an attempt Core abandoned because its node went OFFLINE. */
