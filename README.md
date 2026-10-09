@@ -297,6 +297,24 @@ Tunable system properties (seconds):
 | `phoenix.taskTimeoutSeconds`     | 12      | Max time **after delivery** for a result (was end-to-end before #28) |
 | `phoenix.contactLivenessSeconds` | 15      | How recently a node must have polled to count as "in contact"        |
 
+### Lifecycle contract: how an attempt ends
+
+Every transport ends an attempt the same way:
+
+| What happened                          | Lifecycle state | `TaskFailureReason`  |
+| -------------------------------------- | --------------- | -------------------- |
+| Node reported `SUCCESS`                | `COMPLETED`     | `NONE`               |
+| Node reported a failure                | `FAILED`        | `EXECUTION_ERROR`    |
+| Never delivered, node still in contact | `FAILED`        | `DELIVERY_TIMEOUT`   |
+| Never delivered, node silent           | `FAILED`        | `NODE_UNREACHABLE`   |
+| Delivered, no result in time           | `FAILED`        | `EXECUTION_TIMEOUT`  |
+| Transport broke                        | `FAILED`        | `TRANSPORT_ERROR`    |
+| Node declared `OFFLINE`                | `ABANDONED`     | `NODE_OFFLINE`       |
+
+`COMPLETED` therefore always means "the node succeeded". The mapping from a
+node-reported result lives in one place,
+`TaskLifecycleService.reported(attempt, result)`.
+
 ### Node `OFFLINE` and in-flight tasks
 
 Timeouts decide what to do when a node is merely _slow_. A node that

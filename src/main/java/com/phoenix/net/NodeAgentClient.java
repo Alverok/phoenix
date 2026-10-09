@@ -16,9 +16,12 @@ import com.phoenix.model.TaskResult;
  * <p><b>1. Report the lifecycle you can observe.</b> Report transitions to
  * {@link com.phoenix.core.TaskLifecycleService}:
  * {@code accepted} (transport took the task), {@code delivered} (it reached
- * the node), {@code started} (node acknowledged execution, optional),
- * {@code completed} / {@code failed}. A transport reports only what it can
- * truly observe and never invents transitions.
+ * the node), {@code started} (node acknowledged execution, optional). Every
+ * report is made through the {@code Attempt} handle returned by
+ * {@code accepted}. When the node returns a result, report it with
+ * {@code reported(attempt, result)}; use {@code failed(attempt)} only when
+ * the attempt ended without a node result. A transport reports only what it
+ * can truly observe and never invents transitions.
  *
  * <p><b>2. Return a classified {@link TaskResult}.</b> When the attempt does
  * not produce a node result, the failure reason must say which phase failed:

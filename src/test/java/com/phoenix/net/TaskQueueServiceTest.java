@@ -256,4 +256,35 @@ class TaskQueueServiceTest {
                 () -> queue.awaitDelivery("task-001", Duration.ofMillis(5))
         );
     }
+
+    @Test
+    void aNodeReportedFailureEndsTheAttemptAsFailedNotCompleted()
+            throws Exception {
+
+        queue.submit("n1", DEVICE, task("task-001"));
+        queue.poll(DEVICE);
+
+        assertTrue(queue.completeResult(
+                new TaskResult(
+                        "task-001",
+                        "FAILED",
+                        "boom",
+                        com.phoenix.model.TaskFailureReason.EXECUTION_ERROR)));
+
+        // Issue #37: the pull transport used to record COMPLETED here while
+        // the push transport recorded FAILED for the same node outcome.
+        assertEquals(TaskLifecycleState.FAILED, state("task-001"));
+    }
+
+    @Test
+    void aNodeReportedSuccessEndsTheAttemptAsCompleted()
+            throws Exception {
+
+        queue.submit("n1", DEVICE, task("task-001"));
+        queue.poll(DEVICE);
+
+        assertTrue(queue.completeResult(success("task-001")));
+
+        assertEquals(TaskLifecycleState.COMPLETED, state("task-001"));
+    }
 }

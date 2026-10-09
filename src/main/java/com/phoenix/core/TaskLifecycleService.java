@@ -12,6 +12,7 @@ import java.util.concurrent.ConcurrentHashMap;
 import com.google.inject.Inject;
 import com.google.inject.Singleton;
 import com.phoenix.model.TaskLifecycleState;
+import com.phoenix.model.TaskResult;
 
 /**
  * Core-owned, transport-neutral record of how far each task attempt has
@@ -153,6 +154,28 @@ public class TaskLifecycleService {
 
     public void failed(Attempt attempt) {
         advance(attempt.taskId(), attempt, TaskLifecycleState.FAILED);
+    }
+
+    /**
+     * The node reported a result for {@code attempt}.
+     *
+     * <p>This is the single place that decides how a node-reported result
+     * maps onto the ledger, so every transport (pull, push, and the planned
+     * MQTT one) ends an attempt identically: a successful result completes
+     * it, anything else fails it. Transports must use this instead of
+     * choosing between {@link #completed(Attempt)} and
+     * {@link #failed(Attempt)} themselves.
+     */
+    public void reported(Attempt attempt, TaskResult result) {
+
+        Objects.requireNonNull(attempt, "attempt");
+        Objects.requireNonNull(result, "result");
+
+        if (result.isSuccess()) {
+            completed(attempt);
+        } else {
+            failed(attempt);
+        }
     }
 
     /**
