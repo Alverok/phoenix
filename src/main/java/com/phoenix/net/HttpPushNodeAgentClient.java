@@ -257,26 +257,20 @@ public class HttpPushNodeAgentClient
                 );
             }
 
-            /*
-             * Lifecycle state must reflect the actual result status.
-             *
-             * SUCCESS -> COMPLETED
-             * anything else -> FAILED
-             */
-            if ("SUCCESS".equalsIgnoreCase(body.status)) {
-                lifecycle.completed(attempt);
-            } else {
-                lifecycle.failed(attempt);
-            }
+            TaskResult reported =
+                    new TaskResult(
+                            task.id(),
+                            body.status,
+                            body.outputData,
+                            "SUCCESS".equalsIgnoreCase(body.status)
+                                    ? TaskFailureReason.NONE
+                                    : TaskFailureReason.EXECUTION_ERROR
+                    );
 
-            return new TaskResult(
-                    task.id(),
-                    body.status,
-                    body.outputData,
-                    "SUCCESS".equalsIgnoreCase(body.status)
-                            ? TaskFailureReason.NONE
-                            : TaskFailureReason.EXECUTION_ERROR
-            );
+            // Same mapping as the pull transport (Issue #37).
+            lifecycle.reported(attempt, reported);
+
+            return reported;
 
         } catch (SocketTimeoutException exception) {
 

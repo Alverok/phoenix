@@ -326,7 +326,7 @@ public class TaskQueueService {
             return false;
         }
 
-        lifecycle.completed(pending.attempt);
+        lifecycle.reported(pending.attempt, result);
         return true;
     }
 

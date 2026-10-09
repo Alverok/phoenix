@@ -51,6 +51,7 @@ class TaskLifecycleApiShapeTest {
                         "started[Attempt]",
                         "completed[Attempt]",
                         "failed[Attempt]",
+                        "reported[Attempt, TaskResult]",
                         "abandonAttemptsOn[String]",
                         "snapshot[String]",
                         "currentAttempt[String]",
