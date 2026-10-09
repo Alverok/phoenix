@@ -42,7 +42,7 @@ class TaskQueueServiceTest {
     @Test
     void submitAcceptsButDoesNotDeliver() {
 
-        queue.submit(DEVICE, task("task-001"));
+        queue.submit("n1", DEVICE, task("task-001"));
 
         assertEquals(TaskLifecycleState.ACCEPTED, state("task-001"));
         assertEquals(1, queue.queueLength(DEVICE));
@@ -51,7 +51,7 @@ class TaskQueueServiceTest {
     @Test
     void pollHandsTheTaskOverAndMarksItDelivered() throws Exception {
 
-        queue.submit(DEVICE, task("task-001"));
+        queue.submit("n1", DEVICE, task("task-001"));
 
         Optional<TaskDescriptor> polled = queue.poll(DEVICE);
 
@@ -67,7 +67,7 @@ class TaskQueueServiceTest {
     void awaitDeliveryReportsFalseWhileTheTaskIsStillQueued()
             throws Exception {
 
-        queue.submit(DEVICE, task("task-001"));
+        queue.submit("n1", DEVICE, task("task-001"));
 
         assertFalse(
                 queue.awaitDelivery("task-001", Duration.ofMillis(50))
@@ -79,7 +79,7 @@ class TaskQueueServiceTest {
     @Test
     void awaitDeliveryWakesWhenTheNodePolls() throws Exception {
 
-        queue.submit(DEVICE, task("task-001"));
+        queue.submit("n1", DEVICE, task("task-001"));
 
         Thread poller = new Thread(() -> {
             try {
@@ -109,7 +109,7 @@ class TaskQueueServiceTest {
     @Test
     void cancelRemovesAnUndeliveredTaskSoTheNodeNeverSeesIt() {
 
-        queue.submit(DEVICE, task("task-001"));
+        queue.submit("n1", DEVICE, task("task-001"));
 
         assertTrue(queue.cancelQueuedTask(DEVICE, "task-001"));
         assertEquals(0, queue.queueLength(DEVICE));
@@ -119,7 +119,7 @@ class TaskQueueServiceTest {
     @Test
     void cancelIsRefusedOnceTheNodeHasPulledTheTask() {
 
-        queue.submit(DEVICE, task("task-001"));
+        queue.submit("n1", DEVICE, task("task-001"));
         queue.poll(DEVICE);
 
         assertFalse(queue.cancelQueuedTask(DEVICE, "task-001"));
@@ -128,7 +128,7 @@ class TaskQueueServiceTest {
     @Test
     void resultForAnUndeliveredAttemptIsRejectedAsStale() {
 
-        queue.submit(DEVICE, task("task-001"));
+        queue.submit("n1", DEVICE, task("task-001"));
 
         assertFalse(queue.completeResult(success("task-001")));
         assertEquals(TaskLifecycleState.ACCEPTED, state("task-001"));
@@ -137,7 +137,7 @@ class TaskQueueServiceTest {
     @Test
     void resultAfterDeliveryCompletesTheAttempt() throws Exception {
 
-        queue.submit(DEVICE, task("task-001"));
+        queue.submit("n1", DEVICE, task("task-001"));
         queue.poll(DEVICE);
 
         assertTrue(queue.completeResult(success("task-001")));
@@ -152,7 +152,7 @@ class TaskQueueServiceTest {
     @Test
     void duplicateResultIsRejected() {
 
-        queue.submit(DEVICE, task("task-001"));
+        queue.submit("n1", DEVICE, task("task-001"));
         queue.poll(DEVICE);
 
         assertTrue(queue.completeResult(success("task-001")));
@@ -164,7 +164,7 @@ class TaskQueueServiceTest {
             throws Exception {
 
         // Attempt 1: delivered, node goes silent, execution times out.
-        queue.submit(DEVICE, task("task-001"));
+        queue.submit("n1", DEVICE, task("task-001"));
         queue.poll(DEVICE);
 
         assertThrows(
@@ -175,7 +175,7 @@ class TaskQueueServiceTest {
         );
 
         // Attempt 2: recovery re-queues the same task; no node has seen it.
-        queue.submit("device-2", task("task-001"));
+        queue.submit("n2", "device-2", task("task-001"));
 
         // The slow first node finally answers.
         assertFalse(queue.completeResult(success("task-001")));
@@ -189,7 +189,7 @@ class TaskQueueServiceTest {
     @Test
     void startedAckRequiresDelivery() {
 
-        queue.submit(DEVICE, task("task-001"));
+        queue.submit("n1", DEVICE, task("task-001"));
 
         assertFalse(queue.markStarted("task-001"));
 
@@ -230,7 +230,7 @@ class TaskQueueServiceTest {
         TaskQueueService timed =
                 new TaskQueueService(new TaskLifecycleService(clock), clock);
 
-        timed.submit(DEVICE, task("task-001"));
+        timed.submit("n1", DEVICE, task("task-001"));
         timed.recordPoll(DEVICE);
 
         clock.advance(Duration.ofSeconds(2));
@@ -247,7 +247,7 @@ class TaskQueueServiceTest {
     @Test
     void discardDropsPendingStateAndIsIdempotent() {
 
-        queue.submit(DEVICE, task("task-001"));
+        queue.submit("n1", DEVICE, task("task-001"));
         queue.discard("task-001");
         queue.discard("task-001");
 
