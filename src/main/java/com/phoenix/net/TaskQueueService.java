@@ -79,18 +79,6 @@ public class TaskQueueService {
     }
 
     /**
-     * Queues a task for a device without binding the attempt to a node.
-     * Such an attempt is never reconciled by node liveness; prefer
-     * {@link #submit(String, String, TaskDescriptor)}.
-     */
-    public TaskLifecycleService.Attempt submit(
-            String deviceId,
-            TaskDescriptor task) {
-
-        return submit(null, deviceId, task);
-    }
-
-    /**
      * Queues a task for a device and starts a new attempt bound to
      * {@code nodeId}.
      */

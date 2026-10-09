@@ -5,6 +5,7 @@ import java.time.Instant;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
+import java.util.Objects;
 import java.util.Optional;
 import java.util.concurrent.ConcurrentHashMap;
 
@@ -66,21 +67,20 @@ public class TaskLifecycleService {
         this.clock = clock;
     }
 
-    /** Starts a new attempt that is not bound to any node. */
-    public Attempt accepted(String taskId) {
-        return accepted(taskId, null);
-    }
-
     /**
      * The transport took responsibility for the task; starts a new attempt
      * bound to {@code nodeId}.
      *
-     * @param nodeId the node the attempt was placed on, or {@code null} if
-     *        unknown (such an attempt is never reconciled by node liveness)
+     * @param nodeId the node the attempt was placed on; required, because
+     *        an attempt that is not bound to a node can never be reconciled
+     *        by node liveness
      */
     public Attempt accepted(
             String taskId,
             String nodeId) {
+
+        Objects.requireNonNull(taskId, "taskId");
+        Objects.requireNonNull(nodeId, "nodeId");
 
         if (attempts.size() > PRUNE_THRESHOLD) {
             attempts.values().removeIf(
@@ -138,37 +138,17 @@ public class TaskLifecycleService {
         return created.attempt();
     }
 
-    /** The task reached the node (current attempt). */
-    public void delivered(String taskId) {
-        advance(taskId, null, TaskLifecycleState.DELIVERED);
-    }
-
     /** The task reached the node; ignored if {@code attempt} is stale. */
     public void delivered(Attempt attempt) {
         advance(attempt.taskId(), attempt, TaskLifecycleState.DELIVERED);
-    }
-
-    /** The node acknowledged that execution started (optional). */
-    public void started(String taskId) {
-        advance(taskId, null, TaskLifecycleState.STARTED);
     }
 
     public void started(Attempt attempt) {
         advance(attempt.taskId(), attempt, TaskLifecycleState.STARTED);
     }
 
-    /** The node reported a result. */
-    public void completed(String taskId) {
-        advance(taskId, null, TaskLifecycleState.COMPLETED);
-    }
-
     public void completed(Attempt attempt) {
         advance(attempt.taskId(), attempt, TaskLifecycleState.COMPLETED);
-    }
-
-    /** The attempt ended without a node result. */
-    public void failed(String taskId) {
-        advance(taskId, null, TaskLifecycleState.FAILED);
     }
 
     public void failed(Attempt attempt) {
@@ -187,6 +167,8 @@ public class TaskLifecycleService {
      */
     public List<Snapshot> abandonAttemptsOn(String nodeId) {
 
+        Objects.requireNonNull(nodeId, "nodeId");
+
         Instant now = clock.instant();
 
         List<Snapshot> abandoned = new ArrayList<>();
@@ -200,8 +182,7 @@ public class TaskLifecycleService {
 
                         if (entry.snapshot().state().isTerminal()
                                 || !nodeId.equals(
-                                        entry.attempt().nodeId()
-                                                .orElse(null))) {
+                                        entry.attempt().nodeId())) {
                             return entry;
                         }
 
@@ -333,9 +314,9 @@ public class TaskLifecycleService {
             return number;
         }
 
-        /** The node this attempt was placed on, if known. */
-        public Optional<String> nodeId() {
-            return Optional.ofNullable(nodeId);
+        /** The node this attempt was placed on. */
+        public String nodeId() {
+            return nodeId;
         }
 
         /** True once Core stopped waiting for this attempt. */
@@ -402,7 +383,7 @@ public class TaskLifecycleService {
      * apart from "never delivered".
      *
      * @param attempt attempt number (1 = first attempt)
-     * @param nodeId  node the attempt was placed on; {@code null} if unknown
+     * @param nodeId  node the attempt was placed on
      */
     public record Snapshot(
             String taskId,

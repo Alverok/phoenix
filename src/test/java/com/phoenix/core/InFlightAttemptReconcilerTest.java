@@ -17,6 +17,20 @@ class InFlightAttemptReconcilerTest {
     private final DeviceRegistry registry = new DeviceRegistry();
     private final NodeHealthMonitor monitor = new NodeHealthMonitor(registry);
     private final TaskLifecycleService lifecycle = new TaskLifecycleService();
+
+    private final java.util.Map<String, TaskLifecycleService.Attempt> handles =
+            new java.util.HashMap<>();
+
+    private TaskLifecycleService.Attempt accept(String taskId, String nodeId) {
+        TaskLifecycleService.Attempt attempt =
+                lifecycle.accepted(taskId, nodeId);
+        handles.put(taskId, attempt);
+        return attempt;
+    }
+
+    private TaskLifecycleService.Attempt h(String taskId) {
+        return handles.get(taskId);
+    }
     private final InFlightAttemptReconciler reconciler =
             new InFlightAttemptReconciler(lifecycle, monitor);
 
@@ -47,8 +61,8 @@ class InFlightAttemptReconcilerTest {
         register("B");
         reconciler.start();
 
-        lifecycle.accepted("on-a", "A");
-        lifecycle.accepted("on-b", "B");
+        accept("on-a", "A");
+        accept("on-b", "B");
 
         // Only A is aged out: B's heartbeat is strictly later than A's.
         sleepBriefly();
@@ -65,8 +79,8 @@ class InFlightAttemptReconcilerTest {
         Instant hb = register("A");
         reconciler.start();
 
-        lifecycle.accepted("on-a", "A");
-        lifecycle.delivered("on-a");
+        accept("on-a", "A");
+        lifecycle.delivered(h("on-a"));
 
         monitor.evaluate(hb.plusSeconds(30));   // DEGRADED, not OFFLINE
 
@@ -80,7 +94,7 @@ class InFlightAttemptReconcilerTest {
         reconciler.start();
         reconciler.start();
 
-        TaskLifecycleService.Attempt attempt = lifecycle.accepted("on-a", "A");
+        TaskLifecycleService.Attempt attempt = accept("on-a", "A");
         int[] runs = new int[1];
         attempt.onAbandon(() -> runs[0]++);
 
@@ -93,7 +107,7 @@ class InFlightAttemptReconcilerTest {
     void notStartedMeansNothingIsReconciled() {
 
         Instant hb = register("A");
-        lifecycle.accepted("on-a", "A");
+        accept("on-a", "A");
 
         monitor.evaluate(hb.plusSeconds(61));
 

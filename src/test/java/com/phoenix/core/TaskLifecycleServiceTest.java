@@ -19,6 +19,20 @@ class TaskLifecycleServiceTest {
     private final TaskLifecycleService lifecycle =
             new TaskLifecycleService(clock);
 
+    private final java.util.Map<String, TaskLifecycleService.Attempt> handles =
+            new java.util.HashMap<>();
+
+    private TaskLifecycleService.Attempt accept(String taskId, String nodeId) {
+        TaskLifecycleService.Attempt attempt =
+                lifecycle.accepted(taskId, nodeId);
+        handles.put(taskId, attempt);
+        return attempt;
+    }
+
+    private TaskLifecycleService.Attempt h(String taskId) {
+        return handles.get(taskId);
+    }
+
     private TaskLifecycleService.Snapshot snap(String id) {
         return lifecycle.snapshot(id).orElseThrow();
     }
@@ -31,7 +45,7 @@ class TaskLifecycleServiceTest {
     @Test
     void acceptedTaskHasNotReachedTheNode() {
 
-        lifecycle.accepted("task-001");
+        accept("task-001", "n1");
 
         TaskLifecycleService.Snapshot snapshot = snap("task-001");
 
@@ -44,16 +58,16 @@ class TaskLifecycleServiceTest {
     @Test
     void walksTheFullLifecycleWithTimestamps() {
 
-        lifecycle.accepted("task-001");
+        accept("task-001", "n1");
 
         clock.advance(Duration.ofSeconds(3));
-        lifecycle.delivered("task-001");
+        lifecycle.delivered(h("task-001"));
 
         clock.advance(Duration.ofSeconds(1));
-        lifecycle.started("task-001");
+        lifecycle.started(h("task-001"));
 
         clock.advance(Duration.ofSeconds(2));
-        lifecycle.completed("task-001");
+        lifecycle.completed(h("task-001"));
 
         TaskLifecycleService.Snapshot snapshot = snap("task-001");
 
@@ -77,8 +91,8 @@ class TaskLifecycleServiceTest {
     @Test
     void startedImpliesDelivered() {
 
-        lifecycle.accepted("task-001");
-        lifecycle.started("task-001");
+        accept("task-001", "n1");
+        lifecycle.started(h("task-001"));
 
         TaskLifecycleService.Snapshot snapshot = snap("task-001");
 
@@ -90,8 +104,8 @@ class TaskLifecycleServiceTest {
     void completedWithoutAnyAckStillImpliesDelivered() {
 
         // Push transport: no separate delivered/started signal may arrive.
-        lifecycle.accepted("task-001");
-        lifecycle.completed("task-001");
+        accept("task-001", "n1");
+        lifecycle.completed(h("task-001"));
 
         assertTrue(snap("task-001").reachedNode());
         assertFalse(snap("task-001").startAcknowledged());
@@ -100,8 +114,8 @@ class TaskLifecycleServiceTest {
     @Test
     void failedBeforeDeliveryDoesNotClaimDelivery() {
 
-        lifecycle.accepted("task-001");
-        lifecycle.failed("task-001");
+        accept("task-001", "n1");
+        lifecycle.failed(h("task-001"));
 
         TaskLifecycleService.Snapshot snapshot = snap("task-001");
 
@@ -113,10 +127,10 @@ class TaskLifecycleServiceTest {
     @Test
     void transitionsNeverMoveBackwards() {
 
-        lifecycle.accepted("task-001");
-        lifecycle.started("task-001");
-        lifecycle.delivered("task-001");   // late duplicate
-        lifecycle.accepted("task-002");    // unrelated task
+        accept("task-001", "n1");
+        lifecycle.started(h("task-001"));
+        lifecycle.delivered(h("task-001"));   // late duplicate
+        accept("task-002", "n1");    // unrelated task
 
         assertEquals(
                 TaskLifecycleState.STARTED,
@@ -127,9 +141,9 @@ class TaskLifecycleServiceTest {
     @Test
     void terminalStateIsFinal() {
 
-        lifecycle.accepted("task-001");
-        lifecycle.failed("task-001");
-        lifecycle.completed("task-001");   // late result must not resurrect it
+        accept("task-001", "n1");
+        lifecycle.failed(h("task-001"));
+        lifecycle.completed(h("task-001"));   // late result must not resurrect it
 
         assertEquals(
                 TaskLifecycleState.FAILED,
@@ -138,10 +152,13 @@ class TaskLifecycleServiceTest {
     }
 
     @Test
-    void reportsForUnknownTasksAreIgnored() {
+    void reportsFromAForgottenAttemptAreIgnored() {
 
-        lifecycle.delivered("ghost");
-        lifecycle.completed("ghost");
+        TaskLifecycleService.Attempt attempt = accept("ghost", "n1");
+        lifecycle.forget("ghost");
+
+        lifecycle.delivered(attempt);
+        lifecycle.completed(attempt);
 
         assertTrue(lifecycle.snapshot("ghost").isEmpty());
     }
@@ -149,12 +166,12 @@ class TaskLifecycleServiceTest {
     @Test
     void acceptingAgainStartsAFreshAttempt() {
 
-        lifecycle.accepted("task-001");
-        lifecycle.delivered("task-001");
-        lifecycle.failed("task-001");
+        accept("task-001", "n1");
+        lifecycle.delivered(h("task-001"));
+        lifecycle.failed(h("task-001"));
 
         // Recovery re-places the same task.
-        lifecycle.accepted("task-001");
+        accept("task-001", "n1");
 
         TaskLifecycleService.Snapshot snapshot = snap("task-001");
 
@@ -165,7 +182,7 @@ class TaskLifecycleServiceTest {
     @Test
     void forgetRemovesTheTask() {
 
-        lifecycle.accepted("task-001");
+        accept("task-001", "n1");
         lifecycle.forget("task-001");
 
         assertTrue(lifecycle.snapshot("task-001").isEmpty());
