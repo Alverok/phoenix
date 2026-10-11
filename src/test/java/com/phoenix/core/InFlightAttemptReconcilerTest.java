@@ -23,7 +23,7 @@ class InFlightAttemptReconcilerTest {
 
     private TaskLifecycleService.Attempt accept(String taskId, String nodeId) {
         TaskLifecycleService.Attempt attempt =
-                lifecycle.accepted(taskId, nodeId);
+                lifecycle.accepted(taskId, nodeId, AttemptFencing.LEGACY);
         handles.put(taskId, attempt);
         return attempt;
     }

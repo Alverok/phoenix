@@ -46,7 +46,7 @@ class TaskLifecycleApiShapeTest {
 
         assertEquals(
                 new TreeSet<>(Set.of(
-                        "accepted[String, String]",
+                        "accepted[String, String, AttemptFencing]",
                         "delivered[Attempt]",
                         "started[Attempt]",
                         "completed[Attempt]",
@@ -73,7 +73,7 @@ class TaskLifecycleApiShapeTest {
         }
 
         assertEquals(
-                Set.of("submit[String, String, TaskDescriptor]"),
+                Set.of("submit[String, String, TaskDescriptor, AttemptFencing]"),
                 submits
         );
     }

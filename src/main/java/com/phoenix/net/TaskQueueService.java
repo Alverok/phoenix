@@ -10,11 +10,13 @@ import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ExecutionException;
 import java.util.concurrent.LinkedBlockingQueue;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.TimeoutException;
 
 import com.google.inject.Inject;
 import com.google.inject.Singleton;
 import com.phoenix.core.AttemptAbandonedException;
+import com.phoenix.core.AttemptFencing;
 import com.phoenix.core.TaskLifecycleService;
 import com.phoenix.model.TaskDescriptor;
 import com.phoenix.model.TaskResult;
@@ -62,6 +64,7 @@ public class TaskQueueService {
             lastPollByDeviceId = new ConcurrentHashMap<>();
 
     private final TaskLifecycleService lifecycle;
+    private final AtomicLong unfencedResults = new AtomicLong();
     private final Clock clock;
 
     @Inject
@@ -81,14 +84,19 @@ public class TaskQueueService {
     /**
      * Queues a task for a device and starts a new attempt bound to
      * {@code nodeId}.
+     *
+     * @param fencing how strictly reports for this attempt are fenced; the
+     *        caller decides it from what the node announced, and there is
+     *        deliberately no default
      */
     public TaskLifecycleService.Attempt submit(
             String nodeId,
             String deviceId,
-            TaskDescriptor task) {
+            TaskDescriptor task,
+            AttemptFencing fencing) {
 
         TaskLifecycleService.Attempt attempt =
-                lifecycle.accepted(task.id(), nodeId);
+                lifecycle.accepted(task.id(), nodeId, fencing);
 
         // Install the pending state before making the task visible to the agent.
         PendingTask pending = new PendingTask(attempt);
@@ -193,7 +201,11 @@ public class TaskQueueService {
             lifecycle.delivered(pending.attempt);
 
             return Optional.of(
-                    new Delivery(task, pending.attempt.number())
+                    new Delivery(
+                            task,
+                            pending.attempt.id(),
+                            pending.attempt.number(),
+                            pending.attempt.fencing())
             );
         }
 
@@ -209,13 +221,13 @@ public class TaskQueueService {
     }
 
     /**
-     * @param attempt the attempt number echoed by the node, or {@code null}
-     *        if the node does not echo it; a non-null value that is not the
-     *        current attempt is rejected as stale
+     * @param attemptId the attempt id echoed by the node, or {@code null}
+     *        if the node does not echo it; any other value that is not the
+     *        current attempt's id is rejected as stale
      */
     public boolean markStarted(
             String taskId,
-            Integer attempt) {
+            String attemptId) {
 
         PendingTask pending = pendingTasks.get(taskId);
 
@@ -223,7 +235,7 @@ public class TaskQueueService {
                 || !pending.delivered.isDone()
                 || pending.delivered.isCompletedExceptionally()
                 || pending.result.isDone()
-                || isStaleAttempt(pending, attempt)) {
+                || isStaleAttempt(pending, attemptId, false)) {
 
             return false;
         }
@@ -279,17 +291,17 @@ public class TaskQueueService {
      *
      * <p>A result is rejected as stale if there is no pending attempt, the
      * attempt already has a result (or was abandoned), the node echoed an
-     * attempt number that is not the current one, or the current attempt has
+     * attempt id that is not the current one, or the current attempt has
      * not been delivered to any node yet. The last case matters after
      * recovery: a late result from a previous attempt on another node must
      * not complete a re-queued attempt that no node has even seen.
      *
-     * @param attempt the attempt number echoed by the node, or {@code null}
-     *        if the node does not echo it
+     * @param attemptId the attempt id echoed by the node, or {@code null}
+     *        if the node does not echo it (a legacy agent)
      */
     public boolean completeResult(
             TaskResult result,
-            Integer attempt) {
+            String attemptId) {
 
         PendingTask pending =
                 pendingTasks.get(result.taskId());
@@ -302,14 +314,7 @@ public class TaskQueueService {
             return false;
         }
 
-        if (isStaleAttempt(pending, attempt)) {
-            System.out.printf(
-                    "[TaskQueueService] dropping result for %s: it belongs "
-                            + "to attempt %d but the current attempt is %d%n",
-                    result.taskId(),
-                    attempt,
-                    pending.attempt.number()
-            );
+        if (isStaleAttempt(pending, attemptId, true)) {
             return false;
         }
 
@@ -463,18 +468,108 @@ public class TaskQueueService {
         return pending;
     }
 
-    private static boolean isStaleAttempt(
+    /**
+     * Decides whether a node's report belongs to some other attempt.
+     *
+     * <ul>
+     *     <li>An echoed id that is not the current attempt's: stale, always.
+     *         The numeric attempt is never consulted: it is not unique.</li>
+     *     <li>No id, current attempt {@link AttemptFencing#ENFORCED}: stale.
+     *         The node was told to echo, so a report without one cannot be
+     *         shown to belong to this attempt.</li>
+     *     <li>No id, current attempt {@link AttemptFencing#LEGACY}: accepted,
+     *         but it is <b>not fenced</b>; for results this is logged and
+     *         counted so operators can see which agents still need
+     *         upgrading.</li>
+     * </ul>
+     *
+     * @param isResult true for {@code /results}, false for {@code /tasks/started}
+     */
+    private boolean isStaleAttempt(
             PendingTask pending,
-            Integer echoedAttempt) {
+            String echoedAttemptId,
+            boolean isResult) {
 
-        return echoedAttempt != null
-                && echoedAttempt != pending.attempt.number();
+        String taskId = pending.attempt.taskId();
+
+        if (echoedAttemptId != null) {
+
+            if (echoedAttemptId.equals(pending.attempt.id())) {
+                return false;
+            }
+
+            System.out.printf(
+                    "[TaskQueueService] dropping %s for %s: it belongs to "
+                            + "attempt id %s but the current attempt is "
+                            + "%d (id %s)%n",
+                    isResult ? "result" : "start report",
+                    taskId,
+                    abbreviate(echoedAttemptId),
+                    pending.attempt.number(),
+                    pending.attempt.shortId()
+            );
+            return true;
+        }
+
+        if (pending.attempt.fencing() == AttemptFencing.ENFORCED) {
+            System.out.printf(
+                    "[TaskQueueService] dropping %s for %s: node %s "
+                            + "negotiated attempt-id fencing but the report "
+                            + "carries no attemptId (current attempt %d, "
+                            + "id %s)%n",
+                    isResult ? "result" : "start report",
+                    taskId,
+                    pending.attempt.nodeId(),
+                    pending.attempt.number(),
+                    pending.attempt.shortId()
+            );
+            return true;
+        }
+
+        if (isResult) {
+            unfencedResults.incrementAndGet();
+
+            System.out.printf(
+                    "[TaskQueueService] WARNING accepted UNFENCED result "
+                            + "for %s from legacy node %s (no attemptId): a "
+                            + "late result from an abandoned attempt could "
+                            + "not be told apart%n",
+                    taskId,
+                    pending.attempt.nodeId()
+            );
+        }
+
+        return false;
     }
 
-    /** A task handed to a polling node, with its attempt number. */
+    /**
+     * Results accepted without an attempt id because the current attempt was
+     * {@link AttemptFencing#LEGACY}. Non-zero means some agent still needs
+     * the {@code attempt-id} feature.
+     */
+    public long unfencedResultCount() {
+        return unfencedResults.get();
+    }
+
+    /** Bounds untrusted, node-supplied text before it reaches the log. */
+    private static String abbreviate(String untrusted) {
+        String clean = untrusted.replaceAll("[\\r\\n]", " ");
+        return clean.length() <= 36 ? clean : clean.substring(0, 36) + "...";
+    }
+
+    /**
+     * A task handed to a polling node.
+     *
+     * @param attemptId     opaque unique id of the attempt (the identity)
+     * @param attemptNumber 1, 2, 3 ... informational only
+     * @param fencing       whether the id is sent to, and required back from,
+     *                      the node
+     */
     public record Delivery(
             TaskDescriptor task,
-            int attempt
+            String attemptId,
+            int attemptNumber,
+            AttemptFencing fencing
     ) {}
 
     /** State of one task attempt inside the pull transport. */

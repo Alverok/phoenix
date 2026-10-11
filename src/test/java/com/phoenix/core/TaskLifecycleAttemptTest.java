@@ -1,6 +1,7 @@
 package com.phoenix.core;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertNotEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertSame;
@@ -27,7 +28,7 @@ class TaskLifecycleAttemptTest {
 
     private TaskLifecycleService.Attempt accept(String taskId, String nodeId) {
         TaskLifecycleService.Attempt attempt =
-                lifecycle.accepted(taskId, nodeId);
+                lifecycle.accepted(taskId, nodeId, AttemptFencing.LEGACY);
         handles.put(taskId, attempt);
         return attempt;
     }
@@ -58,11 +59,11 @@ class TaskLifecycleAttemptTest {
 
         assertThrows(
                 NullPointerException.class,
-                () -> lifecycle.accepted("task-001", null));
+                () -> lifecycle.accepted("task-001", null, AttemptFencing.LEGACY));
 
         assertThrows(
                 NullPointerException.class,
-                () -> lifecycle.accepted(null, "n1"));
+                () -> lifecycle.accepted(null, "n1", AttemptFencing.LEGACY));
 
         assertThrows(
                 NullPointerException.class,
@@ -243,5 +244,106 @@ class TaskLifecycleAttemptTest {
 
         assertSame(second, lifecycle.currentAttempt("task-001").orElseThrow());
         assertTrue(lifecycle.currentAttempt("ghost").isEmpty());
+    }
+
+    // ------------------------------------------------------------------
+    // Issue #36: opaque, globally unique attempt ids
+    // ------------------------------------------------------------------
+
+    @Test
+    void everyAttemptGetsADistinctOpaqueId() {
+
+        TaskLifecycleService.Attempt a = accept("task-001", "n1");
+        TaskLifecycleService.Attempt b = accept("task-001", "n1");
+        TaskLifecycleService.Attempt c = accept("task-002", "n1");
+
+        assertNotEquals(a.id(), b.id());
+        assertNotEquals(a.id(), c.id());
+        assertNotEquals(b.id(), c.id());
+    }
+
+    @Test
+    void theSnapshotExposesTheCurrentAttemptId() {
+
+        accept("task-001", "n1");
+        TaskLifecycleService.Attempt second = accept("task-001", "n2");
+
+        assertEquals(second.id(), snap("task-001").attemptId());
+        assertEquals(2, snap("task-001").attempt());
+    }
+
+    @Test
+    void twoCoreRunsReusingTheSameTaskIdNeverShareAnAttemptId() {
+
+        // A restarted Core numbers tasks from task-001 again and every task
+        // starts at attempt 1; the id is the only thing that tells the runs
+        // apart.
+        String before = new TaskLifecycleService()
+                .accepted("task-001", "n1", AttemptFencing.LEGACY).id();
+        String after = new TaskLifecycleService()
+                .accepted("task-001", "n1", AttemptFencing.LEGACY).id();
+
+        assertNotEquals(before, after);
+    }
+
+    @Test
+    void anInjectedSupplierDecidesTheIds() {
+
+        java.util.concurrent.atomic.AtomicInteger counter =
+                new java.util.concurrent.atomic.AtomicInteger();
+
+        TaskLifecycleService deterministic =
+                new TaskLifecycleService(
+                        new com.phoenix.testsupport.MutableClock(),
+                        () -> "id-" + counter.incrementAndGet());
+
+        assertEquals("id-1", deterministic.accepted("t", "n1", AttemptFencing.LEGACY).id());
+        assertEquals("id-2", deterministic.accepted("t", "n1", AttemptFencing.LEGACY).id());
+    }
+
+    @Test
+    void shortIdIsAPrefixForLogsOnly() {
+
+        TaskLifecycleService deterministic =
+                new TaskLifecycleService(
+                        new com.phoenix.testsupport.MutableClock(),
+                        () -> "0123456789abcdef");
+
+        TaskLifecycleService.Attempt attempt =
+                deterministic.accepted("t", "n1", AttemptFencing.LEGACY);
+
+        assertEquals("01234567", attempt.shortId());
+        assertEquals("0123456789abcdef", attempt.id());
+    }
+
+    @Test
+    void anAttemptIdSurvivesPruningAsANewUniqueId() {
+
+        String first = accept("task-001", "n1").id();
+        lifecycle.failed(h("task-001"));
+
+        // Push the ledger past its prune threshold with finished tasks.
+        for (int i = 0; i < 4200; i++) {
+            TaskLifecycleService.Attempt filler =
+                    lifecycle.accepted("filler-" + i, "n1", AttemptFencing.LEGACY);
+            lifecycle.failed(filler);
+        }
+
+        TaskLifecycleService.Attempt again = accept("task-001", "n1");
+
+        assertNotEquals(first, again.id());
+    }
+
+    @Test
+    void aSupplierThatReturnsNullIsRejectedAtAccept() {
+
+        TaskLifecycleService broken =
+                new TaskLifecycleService(
+                        new com.phoenix.testsupport.MutableClock(),
+                        () -> null);
+
+        assertThrows(
+                NullPointerException.class,
+                () -> broken.accepted("t", "n1", AttemptFencing.LEGACY));
     }
 }
