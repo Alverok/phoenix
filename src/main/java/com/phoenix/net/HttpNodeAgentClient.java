@@ -85,7 +85,8 @@ public class HttpNodeAgentClient
                 taskQueue.submit(
                         target.nodeId(),
                         deviceId.get(),
-                        task
+                        task,
+                        registrationServer.fencingFor(target.nodeId())
                 );
 
         System.out.printf(

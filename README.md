@@ -372,24 +372,64 @@ bouncing, failure-driven returns to waiting are budgeted:
 An expired task is given up only after one fresh placement attempt also found no
 eligible node.
 
-#### Optional attempt identifier on the wire
+#### Attempt identity and fencing on the wire
 
-Core always numbers attempts internally. To let Core reject a late message from
-an old attempt even after the task was re-delivered to _another_ node, Core can
-send the attempt number with the task and accept it back:
+Core tracks every execution attempt internally. To reject a late message from
+an old attempt even after the task was re-delivered to _another_ node (or after
+a Core restart reused the same task id), the node has to echo an identity back.
+Whether it can is **negotiated per node at registration**:
 
 ```json
-{ "taskId": "task-001", "type": "Monte-Carlo-Pi", "samples": 2000000, "attempt": 2 }
+POST /register
+{ "deviceId": "...", "displayName": "...", "capabilities": [],
+  "protocolFeatures": ["attempt-id"] }
+```
+
+| Node announced      | Fencing mode | What Core does                                                                                             |
+| ------------------- | ------------ | ---------------------------------------------------------------------------------------------------------- |
+| `attempt-id`        | `ENFORCED`   | Sends `attemptId` with each task; **rejects** any `/tasks/started` or `/results` without the right id      |
+| nothing (legacy)    | `LEGACY`     | Sends no extra fields (the agent never sees an unknown field); accepts reports without an id, **unfenced** |
+
+```json
+{ "taskId": "task-001", "type": "Monte-Carlo-Pi", "samples": 2000000,
+  "attemptId": "3f6c1b7e-9a1d-4c52-8a0e-5d2b7f61c9aa", "attemptNumber": 2 }
 ```
 
 ```json
-{ "taskId": "task-001", "attempt": 2, "status": "SUCCESS", "outputData": "..." }
+{ "taskId": "task-001", "attemptId": "3f6c1b7e-9a1d-4c52-8a0e-5d2b7f61c9aa",
+  "status": "SUCCESS", "outputData": "..." }
 ```
 
-The same optional `attempt` field is accepted by `POST /tasks/started`. It is
-**off by default** (`-Dphoenix.attemptOnWire=true` enables it) because Phoenix
-cannot know whether every deployed agent tolerates an unknown JSON field.
-Agents that do not echo it keep working exactly as before.
+| Field           | Role                                                                                                             |
+| --------------- | ---------------------------------------------------------------------------------------------------------------- |
+| `attemptId`     | The identity: an opaque, globally unique string. Agents must echo it back **verbatim** and must not interpret it |
+| `attemptNumber` | 1, 2, 3 ... for the task. Informational only; Core never uses it to match a report                              |
+
+Task ids restart at `task-001` every time Core starts and attempt numbers
+restart at 1 for every task, so neither is unique; the `attemptId` is.
+`protocolFeatures` is separate from `capabilities` (scheduling tags), unknown
+feature names are ignored, and registering again replaces the announced
+features (a downgraded agent is treated as legacy again).
+
+**What is and is not guaranteed.** The mode belongs to the _current attempt_:
+
+- `ENFORCED` current attempt: a late report from any earlier attempt is
+  rejected, whether it carries an old id or none. A legacy agent's zombie
+  result therefore cannot complete a retry that runs on an upgraded node.
+- `LEGACY` current attempt: a report with a **wrong** id is still rejected, but
+  a report with **no** id cannot be told apart from the current attempt's.
+  This is the one remaining gap; it exists only while an agent has not been
+  upgraded.
+
+Legacy agents are visible: Core logs a `WARNING ... LEGACY agent` at
+registration, a `WARNING accepted UNFENCED result` for every result it accepts
+without an id, and counts them (`TaskQueueService.unfencedResultCount()`). The
+push transport is fenced by the HTTP connection itself (the result is the
+response to that very request); it receives the id for the node's own logs.
+
+To forbid the gap outright, start Core with `-Dphoenix.requireAttemptId=true`:
+agents that do not announce `attempt-id` are then refused at registration
+(`400 attempt_id_required`). It is **off by default**.
 
 ## Why HTTP pull is used now
 

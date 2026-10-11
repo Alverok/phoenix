@@ -2,6 +2,7 @@ package com.phoenix.core;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertNotEquals;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import java.net.URI;
@@ -78,14 +79,7 @@ class InFlightReconciliationEndToEndTest {
                         Duration.ofSeconds(30),
                         Duration.ofSeconds(15)));
 
-        String response = post("/register",
-                "{\"deviceId\":\"" + DEVICE_ID + "\","
-                        + "\"displayName\":\"e2e-phone\","
-                        + "\"hardwareClass\":\"ANDROID\","
-                        + "\"architecture\":\"arm64\","
-                        + "\"cpuCores\":4,\"memoryMb\":4096,"
-                        + "\"adapterType\":\"android\","
-                        + "\"capabilities\":[]}").body();
+        String response = register(DEVICE_ID, "").body();
 
         nodeId = response.replaceAll(".*\"nodeId\":\"([^\"]+)\".*", "$1");
         target = new NodeExecutionTarget(nodeId, "e2e-phone", "android");
@@ -93,9 +87,31 @@ class InFlightReconciliationEndToEndTest {
 
     @AfterEach
     void stop() {
-        System.clearProperty("phoenix.attemptOnWire");
+        System.clearProperty("phoenix.requireAttemptId");
         executor.shutdownNow();
         server.stop();
+    }
+
+    private HttpResponse<String> register(
+            String deviceId,
+            String protocolFeaturesJson) throws Exception {
+
+        return post("/register",
+                "{\"deviceId\":\"" + deviceId + "\","
+                        + "\"displayName\":\"e2e-phone\","
+                        + "\"hardwareClass\":\"ANDROID\","
+                        + "\"architecture\":\"arm64\","
+                        + "\"cpuCores\":4,\"memoryMb\":4096,"
+                        + "\"adapterType\":\"android\","
+                        + "\"capabilities\":[]"
+                        + protocolFeaturesJson + "}");
+    }
+
+    /** The agent was upgraded: it now announces that it echoes attempt ids. */
+    private void announceAttemptIdSupport() throws Exception {
+        assertEquals(200, register(
+                DEVICE_ID,
+                ",\"protocolFeatures\":[\"attempt-id\"]").statusCode());
     }
 
     /** The instant at which the node's heartbeat is exactly 60s old. */
@@ -199,26 +215,31 @@ class InFlightReconciliationEndToEndTest {
     void withAttemptEchoALateResultFromTheOldAttemptIsRejected()
             throws Exception {
 
-        System.setProperty("phoenix.attemptOnWire", "true");
+        announceAttemptIdSupport();
 
         Future<TaskResult> first = run("task-001");
-        assertTrue(pollUntilTask().contains("\"attempt\":1"));
+        String firstTask = pollUntilTask();
+        assertTrue(firstTask.contains("\"attemptNumber\":1"));
+        String firstId = attemptIdIn(firstTask);
         monitor.evaluate(offlineInstant());
         first.get(3, TimeUnit.SECONDS);
 
         registry.markOnline(nodeId);
         Future<TaskResult> second = run("task-001");
-        assertTrue(pollUntilTask().contains("\"attempt\":2"));
+        String secondTask = pollUntilTask();
+        assertTrue(secondTask.contains("\"attemptNumber\":2"));
+        String secondId = attemptIdIn(secondTask);
+        assertNotEquals(firstId, secondId);
 
         // The old attempt's result arrives while attempt 2 is delivered:
         // without the echo this would be taken for attempt 2's result.
         assertEquals(404, post("/results",
-                "{\"taskId\":\"task-001\",\"attempt\":1,"
+                "{\"taskId\":\"task-001\",\"attemptId\":\"" + firstId + "\","
                         + "\"status\":\"SUCCESS\",\"outputData\":\"old\"}")
                 .statusCode());
 
         assertEquals(200, post("/results",
-                "{\"taskId\":\"task-001\",\"attempt\":2,"
+                "{\"taskId\":\"task-001\",\"attemptId\":\"" + secondId + "\","
                         + "\"status\":\"SUCCESS\",\"outputData\":\"new\"}")
                 .statusCode());
 
@@ -226,7 +247,143 @@ class InFlightReconciliationEndToEndTest {
     }
 
     @Test
-    void theAttemptFieldIsAbsentFromTheWireByDefault() throws Exception {
+    void theRetiredNumericAttemptFieldIsNoLongerSent() throws Exception {
+
+        announceAttemptIdSupport();
+
+        Future<TaskResult> attempt = run("task-001");
+        String task = pollUntilTask();
+
+        assertFalse(task.contains("\"attempt\":"));
+
+        post("/results",
+                "{\"taskId\":\"task-001\",\"attemptId\":\""
+                        + attemptIdIn(task) + "\",\"status\":\"SUCCESS\","
+                        + "\"outputData\":\"ok\"}");
+        attempt.get(3, TimeUnit.SECONDS);
+    }
+
+    @Test
+    void anEnforcedNodeCannotCompleteWithAnIdLessResult() throws Exception {
+
+        announceAttemptIdSupport();
+        assertEquals(AttemptFencing.ENFORCED, server.fencingFor(nodeId));
+
+        Future<TaskResult> attempt = run("task-001");
+        String id = attemptIdIn(pollUntilTask());
+
+        assertEquals(404, post("/results",
+                "{\"taskId\":\"task-001\",\"status\":\"SUCCESS\","
+                        + "\"outputData\":\"no-id\"}").statusCode());
+        assertEquals(404, post("/tasks/started",
+                "{\"taskId\":\"task-001\"}").statusCode());
+
+        assertEquals(200, post("/tasks/started",
+                "{\"taskId\":\"task-001\",\"attemptId\":\"" + id + "\"}")
+                .statusCode());
+        assertEquals(200, post("/results",
+                "{\"taskId\":\"task-001\",\"attemptId\":\"" + id + "\","
+                        + "\"status\":\"SUCCESS\",\"outputData\":\"ok\"}")
+                .statusCode());
+
+        assertEquals("ok", attempt.get(3, TimeUnit.SECONDS).outputData());
+        assertEquals(0, queue.unfencedResultCount());
+    }
+
+    @Test
+    void aLegacyNodeIsStillAcceptedButItsUnfencedResultIsCounted()
+            throws Exception {
+
+        assertEquals(AttemptFencing.LEGACY, server.fencingFor(nodeId));
+
+        Future<TaskResult> attempt = run("task-001");
+        pollUntilTask();
+
+        assertEquals(200, post("/results",
+                "{\"taskId\":\"task-001\",\"status\":\"SUCCESS\","
+                        + "\"outputData\":\"ok\"}").statusCode());
+
+        attempt.get(3, TimeUnit.SECONDS);
+        assertEquals(1, queue.unfencedResultCount());
+    }
+
+    @Test
+    void reRegisteringWithoutTheFeatureDowngradesTheNodeToLegacy() throws Exception {
+
+        announceAttemptIdSupport();
+        assertEquals(AttemptFencing.ENFORCED, server.fencingFor(nodeId));
+
+        assertEquals(200, register(DEVICE_ID, "").statusCode());
+        assertEquals(AttemptFencing.LEGACY, server.fencingFor(nodeId));
+    }
+
+    @Test
+    void unknownProtocolFeaturesAreIgnored() throws Exception {
+
+        assertEquals(200, register(
+                DEVICE_ID,
+                ",\"protocolFeatures\":[\"telepathy\"]").statusCode());
+
+        assertEquals(AttemptFencing.LEGACY, server.fencingFor(nodeId));
+    }
+
+    @Test
+    void aLegacyZombieCannotCompleteAnEnforcedRetry() throws Exception {
+
+        // Attempt 1 runs on a legacy agent that then drops off the network.
+        Future<TaskResult> first = run("task-001");
+        pollUntilTask();
+        monitor.evaluate(offlineInstant());
+        first.get(3, TimeUnit.SECONDS);
+
+        // The task is retried on an upgraded agent (attempt 2, enforced).
+        registry.markOnline(nodeId);
+        announceAttemptIdSupport();
+        Future<TaskResult> second = run("task-001");
+        String id = attemptIdIn(pollUntilTask());
+
+        // The zombie reconnects and reports attempt 1's result. It has no id,
+        // so it cannot be mistaken for attempt 2's result.
+        assertEquals(404, post("/results",
+                "{\"taskId\":\"task-001\",\"status\":\"SUCCESS\","
+                        + "\"outputData\":\"zombie\"}").statusCode());
+
+        assertEquals(200, post("/results",
+                "{\"taskId\":\"task-001\",\"attemptId\":\"" + id + "\","
+                        + "\"status\":\"SUCCESS\",\"outputData\":\"real\"}")
+                .statusCode());
+
+        assertEquals("real", second.get(3, TimeUnit.SECONDS).outputData());
+    }
+
+    @Test
+    void theRequireAttemptIdPolicyRefusesLegacyAgentsAtRegistration() throws Exception {
+
+        System.setProperty("phoenix.requireAttemptId", "true");
+
+        HttpResponse<String> legacy = register("legacy-device", "");
+        assertEquals(400, legacy.statusCode());
+        assertTrue(legacy.body().contains("attempt_id_required"));
+
+        assertEquals(200, register(
+                "modern-device",
+                ",\"protocolFeatures\":[\"attempt-id\"]").statusCode());
+    }
+
+    @Test
+    void withoutThePolicyLegacyAgentsRegisterNormally() throws Exception {
+        assertEquals(200, register("legacy-device", "").statusCode());
+    }
+
+    private static String attemptIdIn(String json) {
+        java.util.regex.Matcher m = java.util.regex.Pattern
+                .compile("\"attemptId\":\"([^\"]+)\"").matcher(json);
+        assertTrue(m.find(), "no attemptId in " + json);
+        return m.group(1);
+    }
+
+    @Test
+    void aLegacyNodeNeverSeesAnAttemptFieldOnTheWire() throws Exception {
 
         Future<TaskResult> attempt = run("task-001");
 

@@ -124,14 +124,20 @@ public class HttpPushNodeAgentClient
          * attempt once execute() begins processing a valid target.
          */
         TaskLifecycleService.Attempt attempt =
-                lifecycle.accepted(task.id(), target.nodeId());
+                lifecycle.accepted(
+                        task.id(),
+                        target.nodeId(),
+                        registrationServer.fencingFor(target.nodeId()));
 
         /*
-         * Optional attempt identifier for nodes that echo it back.
+         * Optional attempt identity for nodes that echo it back.
          */
         requestBody = requestBody.replace(
                 "@@ATTEMPT@@",
-                AttemptWire.jsonField(attempt.number())
+                AttemptWire.jsonFields(
+                        attempt.fencing(),
+                        attempt.id(),
+                        attempt.number())
         );
 
         /*

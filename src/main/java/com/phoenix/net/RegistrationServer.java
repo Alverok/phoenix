@@ -13,6 +13,7 @@ import java.util.concurrent.ConcurrentHashMap;
 import com.google.gson.Gson;
 import com.google.inject.Inject;
 import com.google.inject.Singleton;
+import com.phoenix.core.AttemptFencing;
 import com.phoenix.core.NodeTelemetryService;
 import com.phoenix.model.NodeRecord;
 import com.phoenix.model.NodeRegistrationRequest;
@@ -53,6 +54,10 @@ public class RegistrationServer {
 
     private final Map<String, String> callbackAddressByNodeId =
         new ConcurrentHashMap<>();
+
+    /** Protocol features each node announced at its latest registration. */
+    private final Map<String, Set<String>> protocolFeaturesByNodeId =
+            new ConcurrentHashMap<>();
 
     private HttpServer server;
 
@@ -109,6 +114,54 @@ public class RegistrationServer {
                 .findFirst();
     }
 
+    /**
+     * How reports for the next attempt on {@code nodeId} are fenced:
+     * {@link AttemptFencing#ENFORCED} if the node announced
+     * {@link ProtocolFeatures#ATTEMPT_ID} at its latest registration,
+     * otherwise {@link AttemptFencing#LEGACY}.
+     */
+    public AttemptFencing fencingFor(String nodeId) {
+        return protocolFeaturesByNodeId
+                .getOrDefault(nodeId, Set.of())
+                .contains(ProtocolFeatures.ATTEMPT_ID)
+                ? AttemptFencing.ENFORCED
+                : AttemptFencing.LEGACY;
+    }
+
+    /**
+     * Operator policy {@code -Dphoenix.requireAttemptId=true}: refuse to
+     * register agents that cannot echo an attempt id, so no unfenced node
+     * ever joins. Off by default.
+     */
+    private static boolean attemptIdRequired() {
+        return Boolean.getBoolean("phoenix.requireAttemptId");
+    }
+
+    private void rememberProtocolFeatures(
+            DeviceAnnouncement announcement,
+            String nodeId) {
+
+        Set<String> features =
+                announcement.protocolFeatures != null
+                        ? Set.copyOf(announcement.protocolFeatures)
+                        : Set.of();
+
+        // Replaced on every registration, so an agent that is downgraded
+        // (or re-installed without the feature) is treated as legacy again.
+        protocolFeaturesByNodeId.put(nodeId, features);
+
+        System.out.printf(
+                features.contains(ProtocolFeatures.ATTEMPT_ID)
+                        ? "[RegistrationServer] Node %s announced %s: late "
+                                + "results will be fenced by attempt id%n"
+                        : "[RegistrationServer] WARNING node %s is a LEGACY "
+                                + "agent (no %s): its late results cannot be "
+                                + "fenced by attempt id%n",
+                nodeId,
+                ProtocolFeatures.ATTEMPT_ID
+        );
+    }
+
     public Optional<String> callbackAddressForNode(String nodeId) {
         return Optional.ofNullable(
             callbackAddressByNodeId.get(nodeId)
@@ -134,6 +187,28 @@ public class RegistrationServer {
 
             validateAnnouncement(announcement);
 
+            if (attemptIdRequired()
+                    && (announcement.protocolFeatures == null
+                            || !announcement.protocolFeatures.contains(
+                                    ProtocolFeatures.ATTEMPT_ID))) {
+
+                System.out.printf(
+                        "[RegistrationServer] Registration refused for %s: "
+                                + "phoenix.requireAttemptId is set and the "
+                                + "agent does not announce %s%n",
+                        announcement.deviceId,
+                        ProtocolFeatures.ATTEMPT_ID
+                );
+
+                sendJson(
+                        exchange,
+                        400,
+                        "{\"status\":\"error\",\"message\":"
+                                + "\"attempt_id_required\"}"
+                );
+                return;
+            }
+
             if (nodeIdByDeviceId.containsKey(announcement.deviceId)) {
                 String existingNodeId =
                         nodeIdByDeviceId.get(announcement.deviceId);
@@ -145,6 +220,8 @@ public class RegistrationServer {
                             existingNodeId
                     );
                 });
+
+                rememberProtocolFeatures(announcement, existingNodeId);
 
                 // ADDED: refresh callback address when an existing device reconnects.
                 storeCallbackAddressIfPresent(
@@ -193,6 +270,8 @@ public class RegistrationServer {
                     announcement.deviceId,
                     nodeInfo.nodeId()
             );
+
+            rememberProtocolFeatures(announcement, nodeInfo.nodeId());
 
             // ADDED: remember where this node can receive pushed tasks.
             storeCallbackAddressIfPresent(
@@ -440,8 +519,11 @@ public class RegistrationServer {
                 String json = String.format(
                         "{\"taskId\":\"%s\",\"type\":\"%s\",\"samples\":2000000%s}",
                         escapeJson(descriptor.id()), escapeJson(descriptor.type()),
-                        // Optional attempt identifier (off unless -Dphoenix.attemptOnWire=true)
-                        AttemptWire.jsonField(delivery.get().attempt()));
+                        // Attempt identity, only for nodes that announced "attempt-id"
+                        AttemptWire.jsonFields(
+                                delivery.get().fencing(),
+                                delivery.get().attemptId(),
+                                delivery.get().attemptNumber()));
 
                 sendJson(exchange, 200, json);
 
@@ -482,7 +564,7 @@ public class RegistrationServer {
                 return;
             }
 
-            if (!taskQueue.markStarted(started.taskId, started.attempt)) {
+            if (!taskQueue.markStarted(started.taskId, started.attemptId)) {
                 sendJson(
                         exchange,
                         404,
@@ -507,8 +589,8 @@ public class RegistrationServer {
     private static class StartedBody {
         String taskId;
 
-        /** Optional echo of the attempt number Core sent with the task. */
-        Integer attempt;
+        /** Optional echo of the attemptId Core sent with the task. */
+        String attemptId;
     }
 
     /**
@@ -578,7 +660,7 @@ public class RegistrationServer {
             );
 
             boolean matched =
-                    taskQueue.completeResult(result, resultBody.attempt);
+                    taskQueue.completeResult(result, resultBody.attemptId);
 
             if (!matched) {
                 sendJson(
@@ -628,8 +710,8 @@ public class RegistrationServer {
         String outputData;
         long executionTimeMs;
 
-        /** Optional echo of the attempt number Core sent with the task. */
-        Integer attempt;
+        /** Optional echo of the attemptId Core sent with the task. */
+        String attemptId;
     }
 
     private static String readBody(

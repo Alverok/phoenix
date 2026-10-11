@@ -17,7 +17,8 @@ class TaskLifecycleContractTest {
 
     private TaskLifecycleState end(TaskResult result) {
         TaskLifecycleService.Attempt attempt =
-                lifecycle.accepted(result.taskId(), "n1");
+                lifecycle.accepted(
+                        result.taskId(), "n1", AttemptFencing.LEGACY);
         lifecycle.delivered(attempt);
         lifecycle.reported(attempt, result);
         return lifecycle.snapshot(result.taskId()).orElseThrow().state();
@@ -61,10 +62,10 @@ class TaskLifecycleContractTest {
     @Test
     void aReportFromAReplacedAttemptIsIgnored() {
 
-        TaskLifecycleService.Attempt first = lifecycle.accepted("t1", "n1");
+        TaskLifecycleService.Attempt first = lifecycle.accepted("t1", "n1", AttemptFencing.LEGACY);
         lifecycle.delivered(first);
 
-        TaskLifecycleService.Attempt second = lifecycle.accepted("t1", "n2");
+        TaskLifecycleService.Attempt second = lifecycle.accepted("t1", "n2", AttemptFencing.LEGACY);
 
         lifecycle.reported(first, new TaskResult("t1", "SUCCESS", "late"));
 
@@ -77,7 +78,7 @@ class TaskLifecycleContractTest {
     @Test
     void aReportCannotResurrectAnAbandonedAttempt() {
 
-        TaskLifecycleService.Attempt attempt = lifecycle.accepted("t1", "n1");
+        TaskLifecycleService.Attempt attempt = lifecycle.accepted("t1", "n1", AttemptFencing.LEGACY);
         lifecycle.abandonAttemptsOn("n1");
 
         lifecycle.reported(attempt, new TaskResult("t1", "SUCCESS", "late"));
@@ -89,7 +90,7 @@ class TaskLifecycleContractTest {
 
     @Test
     void nullArgumentsAreRejected() {
-        TaskLifecycleService.Attempt attempt = lifecycle.accepted("t1", "n1");
+        TaskLifecycleService.Attempt attempt = lifecycle.accepted("t1", "n1", AttemptFencing.LEGACY);
 
         assertThrows(NullPointerException.class,
                 () -> lifecycle.reported(attempt, null));

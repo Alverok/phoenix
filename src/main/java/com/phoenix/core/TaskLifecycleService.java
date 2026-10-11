@@ -8,6 +8,8 @@ import java.util.Map;
 import java.util.Objects;
 import java.util.Optional;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.function.Supplier;
+import java.util.UUID;
 
 import com.google.inject.Inject;
 import com.google.inject.Singleton;
@@ -26,7 +28,7 @@ import com.phoenix.model.TaskResult;
  *
  * <h2>Attempts</h2>
  *
- * <p>Every call to {@link #accepted(String, String)} starts a new
+ * <p>Every call to {@link #accepted(String, String, AttemptFencing)} starts a new
  * <em>attempt</em> of the task, numbered 1, 2, 3 ... per task id, and returns
  * an {@link Attempt} handle. The handle is the attempt's identity (a fencing
  * token): reports made through it are ignored once a newer attempt has
@@ -55,6 +57,7 @@ public class TaskLifecycleService {
     private static final int PRUNE_THRESHOLD = 4096;
 
     private final Clock clock;
+    private final Supplier<String> attemptIds;
     private final Map<String, Entry> attempts =
             new ConcurrentHashMap<>();
 
@@ -65,7 +68,20 @@ public class TaskLifecycleService {
 
     /** Test seam: deterministic time. */
     public TaskLifecycleService(Clock clock) {
-        this.clock = clock;
+        this(clock, () -> UUID.randomUUID().toString());
+    }
+
+    /**
+     * Test seam: deterministic time and attempt ids.
+     *
+     * @param attemptIds source of opaque attempt ids; must never repeat
+     */
+    public TaskLifecycleService(
+            Clock clock,
+            Supplier<String> attemptIds) {
+
+        this.clock = Objects.requireNonNull(clock, "clock");
+        this.attemptIds = Objects.requireNonNull(attemptIds, "attemptIds");
     }
 
     /**
@@ -78,10 +94,12 @@ public class TaskLifecycleService {
      */
     public Attempt accepted(
             String taskId,
-            String nodeId) {
+            String nodeId,
+            AttemptFencing fencing) {
 
         Objects.requireNonNull(taskId, "taskId");
         Objects.requireNonNull(nodeId, "nodeId");
+        Objects.requireNonNull(fencing, "fencing");
 
         if (attempts.size() > PRUNE_THRESHOLD) {
             attempts.values().removeIf(
@@ -90,6 +108,7 @@ public class TaskLifecycleService {
         }
 
         Instant now = clock.instant();
+        String attemptId = requireUsable(attemptIds.get());
         Attempt[] superseded = new Attempt[1];
 
         Entry created = attempts.compute(
@@ -115,9 +134,16 @@ public class TaskLifecycleService {
                                     null,
                                     null,
                                     number,
+                                    attemptId,
+                                    fencing,
                                     nodeId
                             ),
-                            new Attempt(taskId, number, nodeId)
+                            new Attempt(
+                                    taskId,
+                                    number,
+                                    attemptId,
+                                    fencing,
+                                    nodeId)
                     );
                 }
         );
@@ -129,11 +155,11 @@ public class TaskLifecycleService {
         }
 
         System.out.printf(
-                created.attempt().number() == 1
-                        ? "[Lifecycle] %s ACCEPTED%n"
-                        : "[Lifecycle] %s ACCEPTED (attempt %d)%n",
+                "[Lifecycle] %s ACCEPTED (attempt %d, id %s, fencing %s)%n",
                 taskId,
-                created.attempt().number()
+                created.attempt().number(),
+                created.attempt().shortId(),
+                fencing
         );
 
         return created.attempt();
@@ -251,6 +277,19 @@ public class TaskLifecycleService {
         attempts.remove(taskId);
     }
 
+    /** An id is the identity: a null or blank one would fence nothing. */
+    private static String requireUsable(String attemptId) {
+
+        Objects.requireNonNull(attemptId, "attempt id");
+
+        if (attemptId.isBlank()) {
+            throw new IllegalStateException(
+                    "attempt id supplier returned a blank id");
+        }
+
+        return attemptId;
+    }
+
     private void advance(
             String taskId,
             Attempt expected,
@@ -313,6 +352,8 @@ public class TaskLifecycleService {
 
         private final String taskId;
         private final int number;
+        private final String id;
+        private final AttemptFencing fencing;
         private final String nodeId;
 
         private final List<Runnable> hooks = new ArrayList<>();
@@ -321,10 +362,14 @@ public class TaskLifecycleService {
         private Attempt(
                 String taskId,
                 int number,
+                String id,
+                AttemptFencing fencing,
                 String nodeId) {
 
             this.taskId = taskId;
             this.number = number;
+            this.fencing = fencing;
+            this.id = Objects.requireNonNull(id, "attempt id");
             this.nodeId = nodeId;
         }
 
@@ -335,6 +380,28 @@ public class TaskLifecycleService {
         /** 1 for the first attempt of a task, 2 for the first retry, ... */
         public int number() {
             return number;
+        }
+
+        /**
+         * Opaque, globally unique identity of this attempt.
+         *
+         * <p>This, not {@link #number()}, is what goes on the wire and what
+         * a node echoes back. Task ids restart at {@code task-001} every time
+         * Core starts and attempt numbers restart at 1 for every new task, so
+         * neither is unique across Core runs; the id is.
+         */
+        public String id() {
+            return id;
+        }
+
+        /** Whether reports for this attempt must echo {@link #id()}. */
+        public AttemptFencing fencing() {
+            return fencing;
+        }
+
+        /** First 8 characters of {@link #id()}, for log lines only. */
+        public String shortId() {
+            return id.length() <= 8 ? id : id.substring(0, 8);
         }
 
         /** The node this attempt was placed on. */
@@ -405,7 +472,9 @@ public class TaskLifecycleService {
      * been observed, which is how Core tells "delivered but never started"
      * apart from "never delivered".
      *
-     * @param attempt attempt number (1 = first attempt)
+     * @param attempt   attempt number (1 = first attempt); informational
+     * @param attemptId opaque unique id of the attempt
+     * @param fencing   whether reports must echo the id
      * @param nodeId  node the attempt was placed on
      */
     public record Snapshot(
@@ -416,6 +485,8 @@ public class TaskLifecycleService {
             Instant startedAt,
             Instant finishedAt,
             int attempt,
+            String attemptId,
+            AttemptFencing fencing,
             String nodeId
     ) {
 
@@ -466,6 +537,8 @@ public class TaskLifecycleService {
                     started,
                     finished,
                     attempt,
+                    attemptId,
+                    fencing,
                     nodeId
             );
         }

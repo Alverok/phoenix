@@ -2,6 +2,7 @@ package com.phoenix.net;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertNotEquals;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
@@ -15,6 +16,7 @@ import java.util.concurrent.TimeUnit;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
 
+import com.phoenix.core.AttemptFencing;
 import com.phoenix.core.AttemptAbandonedException;
 import com.phoenix.core.TaskLifecycleService;
 import com.phoenix.model.TaskDescriptor;
@@ -46,9 +48,10 @@ class TaskQueueServiceAbandonTest {
         @Override
         public Attempt accepted(
                 String taskId,
-                String nodeId) {
+                String nodeId,
+                AttemptFencing fencing) {
 
-            Attempt attempt = super.accepted(taskId, nodeId);
+            Attempt attempt = super.accepted(taskId, nodeId, fencing);
             abandonAttemptsOn(nodeId);
             return attempt;
         }
@@ -79,7 +82,8 @@ class TaskQueueServiceAbandonTest {
                 queue.submit(
                         "n1",
                         "dev-1",
-                        task("task-before-publication")
+                        task("task-before-publication"),
+                        AttemptFencing.LEGACY
                 );
 
         assertTrue(attempt.isAbandoned());
@@ -99,7 +103,7 @@ class TaskQueueServiceAbandonTest {
     void abandoningAQueuedTaskWakesTheDeliveryWaiterPromptly()
             throws Exception {
 
-        queue.submit("n1", "dev-1", task("task-001"));
+        queue.submit("n1", "dev-1", task("task-001"), AttemptFencing.LEGACY);
 
         Future<Object> waiter = executor.submit(() -> {
             try {
@@ -123,7 +127,7 @@ class TaskQueueServiceAbandonTest {
     @Test
     void anAbandonedTaskIsWithdrawnSoAReconnectingNodeNeverPullsIt() {
 
-        queue.submit("n1", "dev-1", task("task-001"));
+        queue.submit("n1", "dev-1", task("task-001"), AttemptFencing.LEGACY);
         assertEquals(1, queue.queueLength("dev-1"));
 
         lifecycle.abandonAttemptsOn("n1");
@@ -135,7 +139,7 @@ class TaskQueueServiceAbandonTest {
     @Test
     void abandoningADeliveredTaskWakesTheResultWaiter() throws Exception {
 
-        queue.submit("n1", "dev-1", task("task-001"));
+        queue.submit("n1", "dev-1", task("task-001"), AttemptFencing.LEGACY);
         queue.poll("dev-1");
         assertTrue(queue.awaitDelivery("task-001", Duration.ofMillis(10)));
 
@@ -157,7 +161,7 @@ class TaskQueueServiceAbandonTest {
     @Test
     void lateResultAndLateStartedAckForAnAbandonedAttemptAreRejected() {
 
-        queue.submit("n1", "dev-1", task("task-001"));
+        queue.submit("n1", "dev-1", task("task-001"), AttemptFencing.LEGACY);
         queue.poll("dev-1");
         lifecycle.abandonAttemptsOn("n1");
 
@@ -169,8 +173,8 @@ class TaskQueueServiceAbandonTest {
     @Test
     void anAttemptOnAnotherNodeIsUntouched() throws Exception {
 
-        queue.submit("n1", "dev-1", task("task-001"));
-        queue.submit("n2", "dev-2", task("task-002"));
+        queue.submit("n1", "dev-1", task("task-001"), AttemptFencing.LEGACY);
+        queue.submit("n2", "dev-2", task("task-002"), AttemptFencing.LEGACY);
 
         lifecycle.abandonAttemptsOn("n1");
 
@@ -180,47 +184,85 @@ class TaskQueueServiceAbandonTest {
     }
 
     @Test
-    void pollDeliveryCarriesTheAttemptNumber() {
+    void pollDeliveryCarriesTheAttemptIdAndNumber() {
 
-        queue.submit("n1", "dev-1", task("task-001"));
+        queue.submit("n1", "dev-1", task("task-001"), AttemptFencing.LEGACY);
         TaskQueueService.Delivery first =
                 queue.pollDelivery("dev-1").orElseThrow();
-        assertEquals(1, first.attempt());
+        assertEquals(1, first.attemptNumber());
 
         lifecycle.abandonAttemptsOn("n1");
         queue.discard("task-001");
 
-        queue.submit("n2", "dev-2", task("task-001"));
-        assertEquals(2, queue.pollDelivery("dev-2").orElseThrow().attempt());
+        queue.submit("n2", "dev-2", task("task-001"), AttemptFencing.LEGACY);
+        TaskQueueService.Delivery second =
+                queue.pollDelivery("dev-2").orElseThrow();
+
+        assertEquals(2, second.attemptNumber());
+        assertNotEquals(first.attemptId(), second.attemptId());
+        assertEquals(
+                second.attemptId(),
+                lifecycle.snapshot("task-001").orElseThrow().attemptId());
     }
 
     @Test
     void aResultEchoingAnOldAttemptCannotCompleteTheRetry() {
 
         // Attempt 1 on n1: delivered, then abandoned (n1 went OFFLINE).
-        queue.submit("n1", "dev-1", task("task-001"));
+        TaskLifecycleService.Attempt first =
+                queue.submit("n1", "dev-1", task("task-001"), AttemptFencing.LEGACY);
         queue.poll("dev-1");
         lifecycle.abandonAttemptsOn("n1");
         queue.discard("task-001");
 
         // Attempt 2 on n2: delivered and running.
-        queue.submit("n2", "dev-2", task("task-001"));
+        TaskLifecycleService.Attempt second =
+                queue.submit("n2", "dev-2", task("task-001"), AttemptFencing.LEGACY);
         queue.poll("dev-2");
 
         // n1 comes back and reports attempt 1's result late.
-        assertFalse(queue.completeResult(success("task-001"), 1));
-        assertFalse(queue.markStarted("task-001", 1));
+        assertFalse(queue.completeResult(success("task-001"), first.id()));
+        assertFalse(queue.markStarted("task-001", first.id()));
         assertEquals(TaskLifecycleState.DELIVERED, state("task-001"));
 
         // The genuine result of attempt 2 is accepted.
-        assertTrue(queue.completeResult(success("task-001"), 2));
+        assertTrue(queue.completeResult(success("task-001"), second.id()));
         assertEquals(TaskLifecycleState.COMPLETED, state("task-001"));
+    }
+
+    @Test
+    void theNumericAttemptNeverIdentifiesAReport() {
+
+        queue.submit("n1", "dev-1", task("task-001"), AttemptFencing.LEGACY);
+        queue.poll("dev-1");
+
+        // "1" is attempt 1's number, but the identity is the opaque id.
+        assertFalse(queue.completeResult(success("task-001"), "1"));
+        assertFalse(queue.completeResult(success("task-001"), ""));
+        assertFalse(queue.completeResult(success("task-001"), "  "));
+        assertEquals(TaskLifecycleState.DELIVERED, state("task-001"));
+    }
+
+    @Test
+    void anIdFromAnEarlierCoreRunCannotCompleteTheSameTaskIdNow() {
+
+        // Two Core runs both start at task-001 / attempt 1. With only the
+        // number to go on they were indistinguishable.
+        TaskLifecycleService before = new TaskLifecycleService();
+        String oldRunId = new TaskQueueService(before)
+                .submit("n1", "dev-1", task("task-001"), AttemptFencing.LEGACY).id();
+
+        queue.submit("n1", "dev-1", task("task-001"), AttemptFencing.LEGACY);
+        queue.poll("dev-1");
+
+        assertFalse(queue.completeResult(success("task-001"), oldRunId));
+        assertEquals(TaskLifecycleState.DELIVERED, state("task-001"));
     }
 
     @Test
     void anAgentThatDoesNotEchoTheAttemptStillWorks() {
 
-        queue.submit("n1", "dev-1", task("task-001"));
+        queue.submit("n1", "dev-1", task("task-001"), AttemptFencing.LEGACY);
         queue.poll("dev-1");
 
         assertTrue(queue.markStarted("task-001", null));
@@ -230,7 +272,7 @@ class TaskQueueServiceAbandonTest {
     @Test
     void anOrphanedQueueEntryIsSkippedNotDelivered() {
 
-        queue.submit("n1", "dev-1", task("task-001"));
+        queue.submit("n1", "dev-1", task("task-001"), AttemptFencing.LEGACY);
         queue.discard("task-001");           // attempt state gone, entry left
 
         Optional<TaskDescriptor> polled = queue.poll("dev-1");
@@ -241,7 +283,7 @@ class TaskQueueServiceAbandonTest {
     @Test
     void abandoningTwiceOrAfterCompletionIsHarmless() {
 
-        queue.submit("n1", "dev-1", task("task-001"));
+        queue.submit("n1", "dev-1", task("task-001"), AttemptFencing.LEGACY);
         queue.poll("dev-1");
         assertTrue(queue.completeResult(success("task-001")));
 

@@ -8,6 +8,7 @@ import java.time.Duration;
 
 import org.junit.jupiter.api.Test;
 
+import com.phoenix.core.AttemptFencing;
 import com.phoenix.core.AttemptAbandonedException;
 import com.phoenix.core.TaskLifecycleService;
 import com.phoenix.model.TaskDescriptor;
@@ -24,8 +25,11 @@ class TaskQueueServicePreAbandonedSubmitTest {
             extends TaskLifecycleService {
 
         @Override
-        public Attempt accepted(String taskId, String nodeId) {
-            Attempt attempt = super.accepted(taskId, nodeId);
+        public Attempt accepted(
+                String taskId,
+                String nodeId,
+                AttemptFencing fencing) {
+            Attempt attempt = super.accepted(taskId, nodeId, fencing);
             abandonAttemptsOn(nodeId);
             return attempt;
         }
@@ -39,7 +43,8 @@ class TaskQueueServicePreAbandonedSubmitTest {
 
         TaskLifecycleService.Attempt attempt = queue.submit(
                 "n1", "dev-1",
-                new TaskDescriptor("task-001", "Monte-Carlo-Pi", 1, 128));
+                new TaskDescriptor("task-001", "Monte-Carlo-Pi", 1, 128),
+                AttemptFencing.LEGACY);
 
         assertTrue(attempt.isAbandoned());
         assertEquals(0, queue.queueLength("dev-1"));
@@ -56,7 +61,8 @@ class TaskQueueServicePreAbandonedSubmitTest {
 
         queue.submit(
                 "n1", "dev-1",
-                new TaskDescriptor("task-001", "Monte-Carlo-Pi", 1, 128));
+                new TaskDescriptor("task-001", "Monte-Carlo-Pi", 1, 128),
+                AttemptFencing.LEGACY);
 
         assertThrows(
                 AttemptAbandonedException.class,

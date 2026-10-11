@@ -20,5 +20,7 @@ public class DeviceAnnouncement {
     public long memoryMb;
     public String adapterType;
     public Set<String> capabilities;
+    /** Optional {@link ProtocolFeatures}; absent for legacy agents. */
+    public Set<String> protocolFeatures;
     public Integer callbackPort; // null for pull-based agents (Android)
 }

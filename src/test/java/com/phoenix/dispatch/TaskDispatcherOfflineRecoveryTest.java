@@ -72,7 +72,10 @@ class TaskDispatcherOfflineRecoveryTest {
             attempted.add(target.nodeId());
 
             TaskLifecycleService.Attempt attempt =
-                    lifecycle.accepted(task.id(), target.nodeId());
+                    lifecycle.accepted(
+                            task.id(),
+                            target.nodeId(),
+                            com.phoenix.core.AttemptFencing.LEGACY);
             CountDownLatch released = new CountDownLatch(1);
             attempt.onAbandon(released::countDown);
             started.countDown();

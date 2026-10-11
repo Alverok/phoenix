@@ -11,6 +11,7 @@ import java.util.Optional;
 
 import org.junit.jupiter.api.Test;
 
+import com.phoenix.core.AttemptFencing;
 import com.phoenix.core.DeviceRegistry;
 import com.phoenix.core.NodeHealthMonitor;
 import com.phoenix.core.NodeTelemetryService;
@@ -37,7 +38,7 @@ class LifecycleTransportParityTest {
         TaskLifecycleService lifecycle = new TaskLifecycleService();
         TaskQueueService queue = new TaskQueueService(lifecycle);
 
-        queue.submit("n1", "dev-1", TASK);
+        queue.submit("n1", "dev-1", TASK, AttemptFencing.LEGACY);
         queue.poll("dev-1");
         queue.completeResult(
                 new TaskResult(
