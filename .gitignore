@@ -29,3 +29,17 @@ out/
 ### OS ###
 .DS_Store
 Thumbs.db
+
+### Local environment and secrets ###
+.env
+.env.*
+!.env.example
+!.env.template
+*.local
+
+### Logs and local databases ###
+*.log
+*.sqlite
+*.sqlite3
+*.db
+*.dump

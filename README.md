@@ -1,5 +1,7 @@
 # Phoenix
 
+[![CI](https://github.com/Alverok/phoenix/actions/workflows/ci.yml/badge.svg)](https://github.com/Alverok/phoenix/actions/workflows/ci.yml)
+
 Phoenix is a lightweight middleware and orchestration system for heterogeneous, resource-constrained edge devices.
 
 The project explores a simple idea: instead of discarding older phones, tablets, laptops, and other devices, can we turn them into a cooperative edge-computing mesh and intelligently place work across them?
@@ -648,7 +650,7 @@ For example:
 
 ```bash
 ./gradlew --console=plain \
-  -Dphoenix.advertiseAddress=10.62.95.63 \
+  -Dphoenix.advertiseAddress=192.0.2.10 \
   run
 ```
 
@@ -698,7 +700,7 @@ The device and Phoenix Core must be able to reach each other over the chosen net
 
 In the Android app:
 
-1. Enter the Core URL, for example `http://10.62.95.63:8080`.
+1. Enter the Core URL, for example `http://192.0.2.10:8080`.
 2. Connect to Phoenix.
 3. Wait for registration and heartbeat activity.
 4. On Phoenix Core, run `list`.
