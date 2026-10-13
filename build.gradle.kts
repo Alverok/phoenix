@@ -57,13 +57,7 @@ tasks.named<JavaExec>("run") {
 
 tasks.test {
     useJUnitPlatform()
-
-    // A hung test (a socket that never answers, a latch that never opens) must
-    // fail the build instead of holding a CI runner until GitHub kills it.
     timeout.set(Duration.ofMinutes(10))
-
-    // Print what failed, and why, straight into the build log. Without this a
-    // failing CI run only says "N tests completed, 1 failed".
     testLogging {
         events("failed", "skipped")
         exceptionFormat = TestExceptionFormat.FULL

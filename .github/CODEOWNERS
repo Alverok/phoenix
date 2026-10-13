@@ -1,8 +1,0 @@
-# Code owners are requested for review automatically on every pull request.
-# Later rules win, so keep the broad rule first and refine below it.
-*                          @Alverok
-
-# Changes to how code is built and checked deserve an owner's eye.
-/.github/                  @Alverok
-/build.gradle.kts          @Alverok
-/gradle/                   @Alverok

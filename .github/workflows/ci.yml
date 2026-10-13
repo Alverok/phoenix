@@ -1,65 +1,41 @@
-# Continuous integration for Phoenix Core.
-#
-# Runs on every pull request and on every push to main. Two independent jobs:
-#   * "Build and test"  - compiles, runs the whole JUnit suite, builds the app
-#   * "Repo hygiene"    - cheap checks that no build output / junk is committed
-#
-# These two job names are what branch protection should require.
-# Do not rename them without updating the repository ruleset.
-
 name: CI
 
 on:
-  pull_request:
   push:
     branches: [main]
+  pull_request:
   workflow_dispatch:
 
-# A new push to a pull request cancels the older, now-pointless run.
-# Runs on main are never cancelled, so every merged commit gets a full result.
-concurrency:
-  group: ci-${{ github.ref }}
-  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
-
-# Least privilege: CI only needs to read the code.
 permissions:
   contents: read
 
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
 jobs:
-  build-test:
+  build:
     name: Build and test
     runs-on: ubuntu-latest
     timeout-minutes: 15
-
     steps:
-      - name: Check out the code
-        uses: actions/checkout@v7
+      - uses: actions/checkout@v7
 
-      # build.gradle.kts pins the Java toolchain to 21, and settings.gradle.kts
-      # has no toolchain auto-download, so the runner must provide JDK 21.
-      - name: Set up JDK 21
-        uses: actions/setup-java@v6
+      - uses: actions/setup-java@v6
         with:
           distribution: temurin
           java-version: "21"
 
-      # Also validates the checksum of gradle/wrapper/gradle-wrapper.jar, so a
-      # pull request cannot smuggle in a tampered wrapper.
-      - name: Set up Gradle
-        uses: gradle/actions/setup-gradle@v6
+      - uses: gradle/actions/setup-gradle@v6
         with:
           cache-provider: basic
+          add-job-summary: on-failure
 
-      - name: Make the wrapper executable
-        run: chmod +x ./gradlew
+      - name: Build
+        run: ./gradlew --no-daemon --console=plain clean build
 
-      # "build" = compile + test + package. clean makes the run independent of
-      # any cached build output, so a green run means a green fresh checkout.
-      - name: Build and test
-        run: ./gradlew --no-daemon --console=plain --stacktrace clean build
-
-      - name: Summarise test results
-        if: always()
+      - name: Test summary
+        if: ${{ !cancelled() }}
         run: python3 .github/scripts/test-summary.py build/test-results/test >> "$GITHUB_STEP_SUMMARY"
 
       - name: Upload test reports
@@ -85,29 +61,23 @@ jobs:
     name: Repo hygiene
     runs-on: ubuntu-latest
     timeout-minutes: 5
-
     steps:
-      - name: Check out the code (full history for the diff check)
-        uses: actions/checkout@v7
+      - uses: actions/checkout@v7
         with:
           fetch-depth: 0
 
-      - name: No build output or compiled files are tracked
+      - name: Check for tracked build output
         run: |
-          bad=$(git ls-files | grep -E '(^|/)(build|\.gradle|out)/|\.class$|\.jar$' \
-                | grep -v '^gradle/wrapper/gradle-wrapper\.jar$' || true)
-          if [ -n "$bad" ]; then
-            echo "::error::Build output or binaries are committed. Add them to .gitignore and remove them with 'git rm --cached':"
-            echo "$bad"
+          tracked=$(git ls-files | grep -E '(^|/)(build|\.gradle|out)/|\.class$|\.jar$' \
+            | grep -v '^gradle/wrapper/gradle-wrapper\.jar$' || true)
+          if [ -n "$tracked" ]; then
+            echo "::error::Build output or binaries are tracked:"
+            echo "$tracked"
             exit 1
           fi
 
-      - name: No whitespace errors in the pull request
+      - name: Check whitespace
         if: github.event_name == 'pull_request'
         env:
           BASE_REF: ${{ github.base_ref }}
-        run: |
-          git diff --check "origin/${BASE_REF}...HEAD" || {
-            echo "::error::Whitespace errors found (trailing spaces, mixed tabs, conflict markers). Run 'git diff --check' locally."
-            exit 1
-          }
+        run: git diff --check "origin/${BASE_REF}...HEAD"

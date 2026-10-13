@@ -1,23 +1,18 @@
-# Dependabot opens a pull request when a dependency has a newer version.
-# Every one of those PRs runs through CI like any other change.
 version: 2
 updates:
-  # Guice, Gson, Lanterna, JUnit, and the Gradle wrapper.
-  - package-ecosystem: gradle
-    directory: "/"
-    schedule:
-      interval: weekly
-      day: monday
-    open-pull-requests-limit: 5
-    commit-message:
-      prefix: "chore(deps)"
+    - package-ecosystem: gradle
+      directory: "/"
+      schedule:
+          interval: weekly
+          day: monday
+      open-pull-requests-limit: 5
+      commit-message:
+          prefix: "chore(deps)"
 
-  # The actions used by .github/workflows/*.yml.
-  - package-ecosystem: github-actions
-    directory: "/"
-    schedule:
-      interval: weekly
-      day: monday
-    open-pull-requests-limit: 5
-    commit-message:
-      prefix: "chore(ci)"
+    - package-ecosystem: github-actions
+      directory: "/"
+      schedule:
+          interval: weekly
+          day: monday
+      commit-message:
+          prefix: "chore(ci)"
