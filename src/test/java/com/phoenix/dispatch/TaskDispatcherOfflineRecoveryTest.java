@@ -150,7 +150,7 @@ class TaskDispatcherOfflineRecoveryTest {
                 new AdapterRegistry(Map.of(
                         "blocking", blocking, "recording", recording)),
                 new TaskJournal(),
-                new TaskRecoveryManager(registry, scheduler),
+                new TaskRecoveryManager(),
                 pending,
                 reservations);
 
@@ -187,7 +187,6 @@ class TaskDispatcherOfflineRecoveryTest {
             throws Exception {
 
         DeviceRegistry registry = new DeviceRegistry();
-        TaskLifecycleService lifecycle = new TaskLifecycleService();
 
         IHardwareAdapter failing = new IHardwareAdapter() {
             @Override
@@ -227,7 +226,7 @@ class TaskDispatcherOfflineRecoveryTest {
                 registry,
                 new AdapterRegistry(Map.of("failing", failing)),
                 new TaskJournal(),
-                new TaskRecoveryManager(registry, scheduler),
+                new TaskRecoveryManager(),
                 pending,
                 reservations);
 
@@ -272,7 +271,7 @@ class TaskDispatcherOfflineRecoveryTest {
                 registry,
                 new AdapterRegistry(Map.of("blocking", blocking)),
                 new TaskJournal(),
-                new TaskRecoveryManager(registry, scheduler),
+                new TaskRecoveryManager(),
                 pending,
                 reservations);
 

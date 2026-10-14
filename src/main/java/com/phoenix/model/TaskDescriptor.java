@@ -1,13 +1,11 @@
 package com.phoenix.model;
 
 /**
- * A unit of work submitted through the API/CLI Gateway before placement.
+ * A unit of work submitted to Core, before placement.
  *
- * <p>Day 2 change: {@code cpuRequirement}/{@code memoryRequirementMb} moved
- * out into {@link TaskRequirements} (see that class for why). A convenience
- * constructor below keeps simple call sites — like the existing Day-1
- * App.java call — one line, so this refactor doesn't ripple outward more
- * than it has to.
+ * @param id           task identifier; unique within one Core run only
+ * @param type         workload type understood by the node agent
+ * @param requirements hard constraints a node must satisfy to be eligible
  */
 public record TaskDescriptor(
         String id,
@@ -15,7 +13,7 @@ public record TaskDescriptor(
         TaskRequirements requirements
 ) {
 
-    /** Convenience constructor matching the old (id, type, cpu, memoryMb) shape. */
+    /** A task that only constrains CPU cores and memory. */
     public TaskDescriptor(String id, String type, int cpuRequirement, int memoryRequirementMb) {
         this(id, type, TaskRequirements.of(cpuRequirement, memoryRequirementMb));
     }

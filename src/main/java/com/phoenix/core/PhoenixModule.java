@@ -28,85 +28,63 @@ import com.phoenix.tui.TaskJournal;
 /**
  * Guice wiring for Phoenix Core.
  *
- * <p>Day 1 wired exactly one IHardwareAdapter out via
- * provideActiveAdapter(), selected by a system property. Day 2
- * retires that concept: the Map<String, IHardwareAdapter> built
- * here is no longer used to pick "the" adapter, it is consumed wholesale by
- * AdapterRegistry, which resolves a different adapter per task
- * depending on which node the TaskScheduler selects. This is what
- * lets Linux, Android, and ESP32 nodes coexist in one run instead of
- * requiring -Dphoenix.adapter=... per JVM invocation.</p>
+ * <p>Hardware adapters are contributed to a {@code Map<String, IHardwareAdapter>}
+ * keyed by adapter type, which {@link AdapterRegistry} consults per task, so
+ * nodes of every hardware class can be served by one Core instance.
  *
- * <p>Also binds the Day-2 orchestration layer:
- * DeviceRegistry (the memory), TaskScheduler bound to
- * GreedyCostScheduler (the brain), and TaskDispatcher
- * — dispatcher wiring is implicit via @Singleton /
- * @Inject constructor injection, no explicit bind needed for
- * concrete classes.</p>
+ * <p>Every stateful service is a singleton: transports, the dispatcher and the
+ * health monitor must all observe the same registry, lifecycle ledger and
+ * reservation state.
  */
 public class PhoenixModule extends AbstractModule {
 
     @Override
     protected void configure() {
 
-        MapBinder<String, IHardwareAdapter> adapterBinder =
-                MapBinder.newMapBinder(
-                        binder(),
-                        String.class,
-                        IHardwareAdapter.class
-                );
+        MapBinder<String, IHardwareAdapter> adapters =
+                MapBinder.newMapBinder(binder(), String.class, IHardwareAdapter.class);
 
-        adapterBinder.addBinding("linux").to(LinuxAdapter.class);
-        adapterBinder.addBinding("android").to(AndroidAdapter.class);
-        adapterBinder.addBinding("esp32").to(Esp32Adapter.class);
+        adapters.addBinding("linux").to(LinuxAdapter.class);
+        adapters.addBinding("android").to(AndroidAdapter.class);
+        adapters.addBinding("esp32").to(Esp32Adapter.class);
 
-        /*
-         * Scheduler abstraction:
-         * Day 2 binds the Greedy implementation.
-         *
-         * Swapping to a future MemeticPlacementScheduler or
-         * SustainabilityAwareScheduler is a one-line change here.
-         */
+        bind(AdapterRegistry.class).in(Singleton.class);
+
+        // Placement policy. Replacing the greedy baseline is a one-line change.
         bind(TaskScheduler.class).to(GreedyCostScheduler.class).in(Singleton.class);
         bind(PlacementCostModel.class).to(WeightedPlacementCostModel.class).in(Singleton.class);
-        bind(PhoenixEventLog.class).in(Singleton.class);
-        bind(TaskJournal.class).in(Singleton.class);
-        bind(PhoenixTui.class).in(Singleton.class);
+
+        // Node registry, telemetry and liveness.
         bind(DeviceRegistry.class).in(Singleton.class);
         bind(NodeTelemetryService.class).in(Singleton.class);
         bind(NodeHealthMonitor.class).in(Singleton.class);
 
-        /*
-         * #28:
-         * Transport-neutral task lifecycle ledger and timeout semantics.
-         * Singletons so every transport reports into, and every consumer
-         * reads from, the same Core-owned state.
-         */
+        // Attempt lifecycle, timeouts and reconciliation with node liveness.
         bind(TaskLifecycleService.class).in(Singleton.class);
         bind(TaskTimeoutPolicy.class).in(Singleton.class);
-
-        /*
-         * In-flight reconciliation:
-         * observes NodeHealthMonitor's OFFLINE decision and abandons the
-         * task attempts that were running on that node.
-         */
         bind(InFlightAttemptReconciler.class).in(Singleton.class);
 
-        /*
-         * #27:
-         * Core-owned placement reservation state.
-         *
-         * This must be a singleton so every concurrent TaskDispatcher
-         * invocation observes and modifies the same reservation ledger.
-         */
+        // Admission, placement and recovery.
         bind(PlacementReservationService.class).in(Singleton.class);
-        bind(AdapterRegistry.class).in(Singleton.class);
-        bind(RegistrationServer.class).in(Singleton.class);
-        bind(TaskQueueService.class).in(Singleton.class);
-        bind(NodeAgentClient.class).annotatedWith(PullTransport.class).to(HttpNodeAgentClient.class).in(Singleton.class);
-        bind(NodeAgentClient.class).annotatedWith(PushTransport.class).to(HttpPushNodeAgentClient.class).in(Singleton.class);
         bind(TaskRecoveryManager.class).in(Singleton.class);
         bind(PendingTaskQueue.class).in(Singleton.class);
         bind(TaskAdmission.class).in(Singleton.class);
+
+        // HTTP transports.
+        bind(RegistrationServer.class).in(Singleton.class);
+        bind(TaskQueueService.class).in(Singleton.class);
+        bind(NodeAgentClient.class)
+                .annotatedWith(PullTransport.class)
+                .to(HttpNodeAgentClient.class)
+                .in(Singleton.class);
+        bind(NodeAgentClient.class)
+                .annotatedWith(PushTransport.class)
+                .to(HttpPushNodeAgentClient.class)
+                .in(Singleton.class);
+
+        // Operator console.
+        bind(PhoenixEventLog.class).in(Singleton.class);
+        bind(TaskJournal.class).in(Singleton.class);
+        bind(PhoenixTui.class).in(Singleton.class);
     }
 }

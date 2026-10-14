@@ -7,32 +7,24 @@ import com.phoenix.model.ResourceStatus;
 import com.phoenix.model.TaskDescriptor;
 
 /**
- * Day-2 implementation of the weighted-cost placement formula from the
- * design document:
+ * Weighted placement cost from the design document:
  *
  * <pre>
  * C(n) = w1*executionTime(n) + w2*energyCost(n) + w3*loadPenalty(n) + w4*networkLatency(n)
  * </pre>
  *
- * <p>Per the Day-2 rule, this does NOT build a prediction model. Every term
- * is derived from whatever {@link ResourceStatus} the node currently has
- * (which is mocked/hardcoded by {@link com.phoenix.sim.NodeSimulator} for
- * now) using a simple, transparent formula — good enough to prove the
- * scheduler's argmin logic works and produce different, explainable
- * rankings across heterogeneous nodes.
+ * <p>Every term is derived directly from the node's latest
+ * {@link ResourceStatus}; there is no prediction model. The formula is
+ * deliberately transparent so rankings across heterogeneous nodes stay
+ * explainable while it serves as the measured baseline.
  *
  * <ul>
- *   <li><b>executionTime</b> — scaled by how many CPU cores the task needs
- *       relative to what the node has free right now. A slower/busier node
- *       gets a higher number.</li>
- *   <li><b>energyCost</b> — read directly off the node's current
- *       {@code energyCostEstimate}. Real per-hardware-class energy profiling
- *       is future work (Chen et al.-inspired); Day 2 just needs the field to
- *       exist and participate in the formula.</li>
- *   <li><b>loadPenalty</b> — a simple function of active tasks + queue
- *       length, so a busy node is penalized even if its CPU % looks free at
- *       this instant.</li>
- *   <li><b>networkLatency</b> — read directly off {@code networkLatencyMs}.</li>
+ *   <li><b>executionTime</b> - requested cores divided by the node's free
+ *       cores. An unknown CPU usage is treated as fully free.</li>
+ *   <li><b>energyCost</b> - the node's {@code energyCostEstimate}.</li>
+ *   <li><b>loadPenalty</b> - active tasks plus queue length, so a busy node
+ *       is penalised even when its instantaneous CPU usage looks low.</li>
+ *   <li><b>networkLatency</b> - the node's {@code networkLatencyMs}.</li>
  * </ul>
  */
 public class WeightedPlacementCostModel implements PlacementCostModel {

@@ -478,4 +478,53 @@ class HttpPushNodeAgentClientTest {
                         .name()
         );
     }
+
+    @Test
+    void aMalformedResultBodyFailsTheAttemptAsATransportError() throws Exception {
+
+        TaskLifecycleService lifecycle =
+                lifecycleService();
+
+        HttpServer server =
+                server(exchange -> {
+                    byte[] response =
+                            "{not json".getBytes(StandardCharsets.UTF_8);
+
+                    exchange.sendResponseHeaders(200, response.length);
+
+                    try (OutputStream output = exchange.getResponseBody()) {
+                        output.write(response);
+                    }
+                });
+
+        try {
+            HttpPushNodeAgentClient client =
+                    clientFor(
+                            "127.0.0.1:" + server.getAddress().getPort(),
+                            lifecycle,
+                            policy(
+                                    Duration.ofSeconds(2),
+                                    Duration.ofSeconds(2),
+                                    Duration.ofSeconds(5)));
+
+            TaskResult result =
+                    client.execute(target(), task("push-malformed"));
+
+            assertEquals(
+                    TaskFailureReason.TRANSPORT_ERROR,
+                    result.failureReason());
+
+            // The attempt must reach a terminal state, or a later OFFLINE
+            // transition would "abandon" an attempt that already ended.
+            assertEquals(
+                    "FAILED",
+                    lifecycle.snapshot("push-malformed")
+                            .orElseThrow()
+                            .state()
+                            .name());
+
+        } finally {
+            server.stop(0);
+        }
+    }
 }

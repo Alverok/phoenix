@@ -3,21 +3,14 @@ package com.phoenix.model;
 import java.util.Set;
 
 /**
- * The self-registration message a node agent sends to Phoenix Core:
- * "Hello, I'm new (or reconnecting), here's what I can do."
+ * Transport-neutral registration of a node with Core.
  *
- * <p>This is transport-agnostic on purpose (design discussion, "device
- * detection" section): {@link com.phoenix.core.DeviceRegistry} does not
- * care whether this request was built by
- * {@link com.phoenix.sim.NodeSimulator} in-process (Day 2), decoded off an
- * MQTT topic, or received on a REST endpoint (Day 3+). Whoever produces one
- * of these and calls {@code DeviceRegistry.register(...)} is doing the same
- * conceptual thing.
+ * <p>Each transport gateway decodes its own wire format into this record and
+ * hands it to {@link com.phoenix.core.NodeTelemetryService#register}, so the
+ * registry never depends on how the node reached Core.
  *
- * <p>{@code existingNodeId} is {@code null}/blank for a first-time
- * enrollment; when present, DeviceRegistry treats this as a reconnect of an
- * already-known node and keeps the stable identity rather than minting a
- * new one (design discussion, "don't give devices disposable identities").
+ * <p>{@code existingNodeId} is {@code null} or blank for a first enrollment.
+ * When present the registry keeps that identity instead of minting a new one.
  */
 public record NodeRegistrationRequest(
         String existingNodeId,

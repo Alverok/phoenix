@@ -43,7 +43,7 @@ Result
 Phoenix Core
 ```
 
-The current remote task transport is **HTTP pull**. It is a working experimental transport and a stepping stone toward the planned MQTT/TLS transport.
+Remote tasks currently travel over HTTP: **pull** for Android nodes (behind NAT, they poll Core) and **push** for directly addressable Linux nodes (Core posts to them). HTTP is the working experimental transport and a stepping stone toward the planned MQTT/TLS transport.
 
 ## What works as of now:
 
@@ -175,7 +175,7 @@ Phoenix assigns its own `nodeId` when the device registers. Phoenix remains auth
 
 ## Node Agent HTTP protocol
 
-The current experimental transport uses four HTTP operations.
+The current experimental transport uses the following HTTP operations.
 
 ### Register
 
@@ -216,7 +216,7 @@ Example:
 }
 ```
 
-`-1` means the platform cannot provide trustworthy CPU telemetry. Phoenix should not treat a fabricated number as a measurement.
+`-1` means the platform cannot provide trustworthy CPU telemetry. Phoenix should not treat a fabricated number as a measurement; an omitted `cpuUsagePercent` is treated the same way.
 
 ### Task polling
 
@@ -226,11 +226,14 @@ When work is waiting:
 
 ```json
 {
-    "id": "task-001",
+    "taskId": "task-001",
     "type": "Monte-Carlo-Pi",
     "samples": 2000000
 }
 ```
+
+Nodes that announced `attempt-id` also receive `attemptId` and `attemptNumber`
+(see [Attempt identity and fencing on the wire](#attempt-identity-and-fencing-on-the-wire)).
 
 When no work is waiting, the normal response is `204 No Content`.
 
@@ -550,9 +553,10 @@ The goal is to evaluate advanced scheduling against measured behavior rather tha
 | HTTP task polling                        | Working     |
 | Result return to Phoenix                 | Working     |
 | Linux native/remote agent                | In progress |
-| Failure-aware task rescheduling          | In progress |
+| Failure-aware task rescheduling          | Working     |
 | Delivery vs execution timeout semantics  | Working     |
 | In-flight recovery on node OFFLINE       | Working     |
+| Attempt fencing (`attempt-id`)           | Working     |
 | MQTT transport                           | Planned     |
 | TLS-secured transport                    | Planned     |
 | ESP32 real execution agent               | Future      |
@@ -560,82 +564,28 @@ The goal is to evaluate advanced scheduling against measured behavior rather tha
 
 ## Repository layout
 
-```text
-Directory structure:
-└──phoenix/
-    ├── README.md
-    ├── build.gradle.kts
-    ├── gradlew
-    ├── gradlew.bat
-    ├── settings.gradle.kts
-    ├── docs/
-    │   └── node-agent-protocol.md
-    ├── gradle/
-    │   └── wrapper/
-    │       └── gradle-wrapper.properties
-    └── src/
-        ├── main/
-        │   └── java/
-        │       └── com/
-        │           └── phoenix/
-        │               ├── App.java
-        │               ├── adapter/
-        │               │   ├── IHardwareAdapter.java
-        │               │   └── impl/
-        │               │       ├── AndroidAdapter.java
-        │               │       ├── Esp32Adapter.java
-        │               │       └── LinuxAdapter.java
-        │               ├── core/
-        │               │   ├── AdapterRegistry.java
-        │               │   ├── DeviceRegistry.java
-        │               │   └── PhoenixModule.java
-        │               ├── dispatch/
-        │               │   ├── DispatchResult.java
-        │               │   ├── NoEligibleNodeException.java
-        │               │   └── TaskDispatcher.java
-        │               ├── model/
-        │               │   ├── HardwareClass.java
-        │               │   ├── NodeExecutionTarget.java
-        │               │   ├── NodeInfo.java
-        │               │   ├── NodeRecord.java
-        │               │   ├── NodeRegistrationRequest.java
-        │               │   ├── NodeStatus.java
-        │               │   ├── ResourceStatus.java
-        │               │   ├── TaskDescriptor.java
-        │               │   ├── TaskRequirements.java
-        │               │   └── TaskResult.java
-        │               ├── net/
-        │               │   ├── DeviceAnnouncement.java
-        │               │   ├── HttpNodeAgentClient.java
-        │               │   ├── NodeAgentClient.java
-        │               │   ├── RegistrationServer.java
-        │               │   └── TaskQueueService.java
-        │               └── scheduler/
-        │                   ├── GreedyCostScheduler.java
-        │                   ├── PlacementCostModel.java
-        │                   ├── SchedulingWeights.java
-        │                   ├── TaskScheduler.java
-        │                   └── WeightedPlacementCostModel.java
-        └── test/
-            └── java/
-                └── com/
-                    └── phoenix/
-                        ├── core/
-                        │   ├── AdapterRegistryTest.java
-                        │   └── DeviceRegistryTest.java
-                        └── scheduler/
-                            └── GreedyCostSchedulerTest.java
+| Package      | Responsibility                                                                         |
+| ------------ | -------------------------------------------------------------------------------------- |
+| `adapter`    | `IHardwareAdapter` and the per-hardware-class adapters                                 |
+| `core`       | Registry, health monitoring, attempt lifecycle, timeouts, reservations, Guice wiring   |
+| `dispatch`   | Admission, placement cycles and the pending (waiting) queue                            |
+| `model`      | Immutable domain records and enums                                                     |
+| `net`        | HTTP gateway, pull and push transports, wire format                                    |
+| `recovery`   | Per-cycle retry policy                                                                 |
+| `scheduler`  | Placement policy and cost model                                                        |
+| `tui`        | Operator console                                                                       |
 
-```
+Protocol details for push agents live in [`docs/linux-agent-protocol.md`](docs/linux-agent-protocol.md).
+Release history is in [`CHANGELOG.md`](CHANGELOG.md).
 
 The native Android Agent is maintained as a standalone Android Studio project with its own Gradle build.
 
 ## Running the Core
 
-Run tests first:
+Build and verify first (compiles with lint as errors, runs the tests and builds the Javadoc):
 
 ```bash
-./gradlew clean test
+./gradlew clean build
 ```
 
 Start Phoenix using the LAN address reachable by your node devices:
@@ -660,25 +610,39 @@ Phoenix exposes the node-agent API at:
 http://<YOUR_LAN_IP>:8080
 ```
 
-### Core CLI
+Any `-Dphoenix.*` property given to `./gradlew run` is forwarded to Core (see [Configuration](#configuration)).
 
-```text
-phoenix> list
-```
+### Operator console
 
-Shows currently registered nodes.
+Core starts a terminal dashboard showing nodes, recent tasks and the event log.
 
-```text
-phoenix> dispatch
-```
+| Key                    | Action                                     |
+| ---------------------- | ------------------------------------------ |
+| `D`                    | Submit a Monte-Carlo-Pi task               |
+| `C`                    | Clear the event log                        |
+| `H`                    | Show the key reference                     |
+| `↑` `↓` / `PgUp` `PgDn` | Scroll the event log                      |
+| `G`                    | Jump back to the latest events             |
+| `Q` / `Esc`            | Stop Phoenix Core                          |
 
-Submits a Monte-Carlo-Pi task and sends it through the scheduler/dispatcher.
+### Configuration
 
-```text
-phoenix> quit
-```
+All settings are JVM system properties.
 
-Stops Phoenix Core.
+| Property                         | Default     | Meaning                                                                 |
+| -------------------------------- | ----------- | ----------------------------------------------------------------------- |
+| `phoenix.advertiseAddress`       | `127.0.0.1` | Address shown in the console for agents to connect to                   |
+| `phoenix.port`                   | `8080`      | Port of the node-agent HTTP gateway                                     |
+| `phoenix.deliveryTimeoutSeconds` | `60`        | Max time a task may wait for a pull node to take it                     |
+| `phoenix.taskTimeoutSeconds`     | `12`        | Max time after delivery for a result                                    |
+| `phoenix.contactLivenessSeconds` | `15`        | How recently a node must have polled to count as in contact             |
+| `phoenix.maxAttempts`            | `3`         | Nodes one placement cycle may try (at least 1)                          |
+| `phoenix.noNodeWaitSeconds`      | `60`        | How long a task may wait with no eligible node (positive)               |
+| `phoenix.maxRecoveryCycles`      | `3`         | Failed-attempt cycles before a task is given up (at least 1)            |
+| `phoenix.requireAttemptId`       | `false`     | Refuse registration of agents that do not announce `attempt-id`        |
+
+Invalid values stop Core at startup with a message naming the property.
+Request bodies on every endpoint are limited to 64 KiB (`413` above that).
 
 ## Running the Android Agent
 
@@ -703,8 +667,8 @@ In the Android app:
 1. Enter the Core URL, for example `http://192.0.2.10:8080`.
 2. Connect to Phoenix.
 3. Wait for registration and heartbeat activity.
-4. On Phoenix Core, run `list`.
-5. Run `dispatch`.
+4. Confirm the device appears in the console's **NODES** panel.
+5. Press `D` to dispatch a task.
 
 A successful run shows a real task executed on the Android device and a real result returned to Phoenix.
 

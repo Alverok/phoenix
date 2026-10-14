@@ -1,15 +1,12 @@
 package com.phoenix.model;
 
 /**
- * The physical hardware family of a node, as distinct from {@code adapterType}
- * (the plugin key Guice/AdapterRegistry uses to resolve an {@link
- * com.phoenix.adapter.IHardwareAdapter}).
+ * Physical hardware family of a node.
  *
- * <p>Kept separate on purpose (Obsidian discussion, "device-registry" thread):
- * two nodes can share a hardware class (e.g. two Linux boxes, one x86_64 one
- * aarch64) while both resolving to the same {@code LinuxAdapter}. Conversely,
- * as Phoenix grows, two different hardware classes could theoretically be
- * driven by adapters that share logic. Don't collapse this into adapterType.
+ * <p>Distinct from {@link NodeInfo#adapterType()}, the plugin key that
+ * selects an {@link com.phoenix.adapter.IHardwareAdapter}. Two nodes of the
+ * same class may differ in architecture yet share an adapter, and the two
+ * need not stay one-to-one, so they are kept as separate fields.
  */
 public enum HardwareClass {
     LINUX,

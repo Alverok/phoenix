@@ -25,6 +25,7 @@ jobs:
               [/^test(?:\([^)]*\))?:/i, "testing"],
               [/^refactor(?:\([^)]*\))?:/i, "refactor"],
               [/^cleanup(?:\([^)]*\))?:/i, "cleanup"],
+              [/^ci(?:\([^)]*\))?:/i, "tooling"],
               [/^chore\((?:ci|tooling)\):/i, "tooling"],
               [/^chore\(deps\):/i, "dependencies"],
             ];

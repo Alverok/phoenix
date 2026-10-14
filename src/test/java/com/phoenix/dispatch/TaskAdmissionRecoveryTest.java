@@ -69,7 +69,7 @@ class TaskAdmissionRecoveryTest {
                             registry,
                             new AdapterRegistry(adapters),
                             journal,
-                            new TaskRecoveryManager(registry, scheduler),
+                            new TaskRecoveryManager(),
                             pending,
                             reservations),
                     journal);

@@ -47,28 +47,13 @@ public class TaskDispatcher {
     }
 
     /**
-     * A dispatch either completes or becomes a logical waiting task.
-     * Waiting is normal control flow, not an exception.
-     */
-    public Outcome dispatch(TaskDescriptor task) {
-
-        taskJournal.submitted(task);
-
-        System.out.printf(
-                "[Dispatcher] Task submitted: id=%s type=%s%n",
-                task.id(),
-                task.type()
-        );
-
-        return place(task);
-    }
-
-    /**
-     * Re-placement path used by TaskAdmission for pending/recovery work.
+     * Runs one placement cycle for a task, fresh or recovered.
      *
-     * <p>Placement reservation is acquired inside the common place() path,
-     * so fresh and recovered tasks use identical capacity-accounting
-     * semantics.</p>
+     * <p>Up to {@link TaskRecoveryManager#maxAttempts()} nodes are tried.
+     * The cycle either completes the task or returns it to
+     * {@link PendingTaskQueue}; waiting is normal control flow, not an
+     * exception. Every path goes through {@link TaskAdmission}, so fresh and
+     * recovered tasks share the same ordering and reservation semantics.
      */
     public Outcome replace(TaskDescriptor task) {
         return place(task);
@@ -172,10 +157,8 @@ public class TaskDispatcher {
              *   - timeout result
              *   - interruption/other RuntimeException
              *
-             * The adapter call is still synchronous (#27). Since #28 the
-             * transport classifies timeouts: DELIVERY_TIMEOUT (never reached
-             * a node that is still in contact) vs EXECUTION_TIMEOUT (reached
-             * the node, no result). The reservation covers both phases.
+             * The adapter call is synchronous and the reservation covers
+             * both the delivery and the execution phase of the attempt.
              */
             try (PlacementReservationService.Reservation reservation =
                          reserved.get()) {
@@ -194,11 +177,6 @@ public class TaskDispatcher {
                         nodeName
                 );
 
-                IHardwareAdapter adapter =
-                        adapterRegistry.resolve(
-                                node.info().adapterType()
-                        );
-
                 NodeExecutionTarget target =
                         new NodeExecutionTarget(
                                 nodeId,
@@ -209,7 +187,7 @@ public class TaskDispatcher {
                 if (attempt == 1) {
 
                     System.out.printf(
-                            "[Dispatcher] Resolved adapter '%s' "
+                            "[Dispatcher] Placing on adapter '%s' "
                                     + "for node %s (id=%s)%n",
                             target.adapterType(),
                             target.displayName(),
@@ -229,9 +207,20 @@ public class TaskDispatcher {
                     );
                 }
 
+                IHardwareAdapter adapter = null;
                 TaskResult result;
 
                 try {
+
+                    /*
+                     * Resolved inside the guard: a node that registered with
+                     * an adapter type Core does not know must fail this
+                     * attempt, not escape the placement cycle.
+                     */
+                    adapter =
+                            adapterRegistry.resolve(
+                                    target.adapterType()
+                            );
 
                     result =
                             adapter.executeTask(
@@ -251,7 +240,9 @@ public class TaskDispatcher {
                             );
                 }
 
-                adapter.reportResult(result);
+                if (adapter != null) {
+                    adapter.reportResult(result);
+                }
 
                 DispatchResult dispatchResult =
                         new DispatchResult(

@@ -42,7 +42,7 @@ import com.phoenix.tui.TaskJournal;
  *   T2 completes
  *   T3 completes
  */
-class PendingTaskSchedulerFifoPolicyTest {
+class PendingTaskFifoPolicyTest {
 
     @Test
     void ineligibleOlderTaskDoesNotBlockEligibleYoungerTasks() {
@@ -86,10 +86,7 @@ class PendingTaskSchedulerFifoPolicyTest {
         TaskJournal journal = new TaskJournal();
 
         TaskRecoveryManager recoveryManager =
-                new TaskRecoveryManager(
-                        registry,
-                        scheduler
-                );
+                new TaskRecoveryManager();
 
         PlacementReservationService reservationService =
                 new PlacementReservationService(
@@ -205,16 +202,7 @@ class PendingTaskSchedulerFifoPolicyTest {
         );
     }
 
-    /**
-     * Minimal adapter used only by this integration-style test.
-     *
-     * This matches the CURRENT IHardwareAdapter contract:
-     *
-     *   executeTask(...)
-     *   reportResult(...)
-     *
-     * Do not add obsolete registerNode()/getResourceStatus() methods here.
-     */
+    /** Adapter that completes every task immediately. */
     private static final class AlwaysSucceedsAdapter
             implements IHardwareAdapter {
 

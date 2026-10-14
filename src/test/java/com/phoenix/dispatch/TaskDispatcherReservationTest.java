@@ -90,10 +90,7 @@ class TaskDispatcherReservationTest {
                 new TaskJournal();
 
         TaskRecoveryManager recoveryManager =
-                new TaskRecoveryManager(
-                        registry,
-                        scheduler
-                );
+                new TaskRecoveryManager();
 
         PendingTaskQueue pendingQueue =
                 new PendingTaskQueue();

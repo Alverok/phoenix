@@ -8,6 +8,7 @@ import java.io.ByteArrayOutputStream;
 import java.io.IOException;
 import java.io.OutputStream;
 import java.net.HttpURLConnection;
+import java.net.URI;
 import java.net.URL;
 import java.time.Duration;
 import java.util.Optional;
@@ -115,7 +116,7 @@ class HttpPushNodeAgentClientJdkDisconnectRaceTest {
             @Override
             protected HttpURLConnection openConnection(String url)
                     throws IOException {
-                holder[0] = new RacyConnection(new URL(url), toThrow);
+                holder[0] = new RacyConnection(URI.create(url).toURL(), toThrow);
                 return holder[0];
             }
         };

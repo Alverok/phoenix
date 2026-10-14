@@ -14,10 +14,8 @@ import com.phoenix.model.NodeStatus;
 import com.phoenix.model.ResourceStatus;
 
 /**
- * This test IS the Day-2 "Memory" milestone: it proves the registry holds
- * multiple nodes, exposes them via get()/list(), tracks heartbeats, and
- * excludes offline nodes from the scheduler's candidate pool — entirely
- * in memory, no SQLite.
+ * The registry holds multiple nodes in memory, tracks heartbeats and keeps
+ * non-schedulable nodes out of the candidate pool.
  */
 class DeviceRegistryTest {
 

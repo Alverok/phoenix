@@ -4,29 +4,17 @@ import java.time.Instant;
 import java.util.Objects;
 
 /**
- * The {@link com.phoenix.core.DeviceRegistry}'s view of one physical node:
- * static identity/capability, live resource state, and lifecycle status,
- * bundled together.
+ * The registry's view of one node: static identity, the latest reported
+ * resources, the lifecycle state and the time of the last heartbeat.
  *
- * <pre>
- * NodeRecord
- * ├── NodeInfo        (static identity/capability)
- * ├── ResourceStatus  (live resource snapshot)
- * ├── NodeStatus      (lifecycle state)
- * └── lastHeartbeat   (Instant)
- * </pre>
+ * <p>Immutable. Every registry update produces a new record through one of
+ * the {@code with*} methods, which keeps updates atomic under
+ * {@code ConcurrentHashMap.compute}.
  *
- * <p>This is the class the design discussion calls out as the missing piece
- * in the original {@code Map<String, NodeInfo>} sketch: without it, live
- * status/heartbeat/health end up bolted onto NodeInfo (which is supposed to
- * stay static). A plain {@code Map<String, NodeRecord>} is still perfectly
- * fine as DeviceRegistry's internal storage — NodeRecord is what makes that
- * map's values richer than a single identity blob.
- *
- * <p>Immutable by design: every mutation on the registry (heartbeat, status
- * update, state transition) produces a new NodeRecord via one of the
- * {@code with*} methods rather than mutating fields in place. This plays
- * nicely with ConcurrentHashMap.compute()-style updates in DeviceRegistry.
+ * @param info          static identity and capability, fixed at registration
+ * @param status        latest node-reported resource snapshot
+ * @param state         lifecycle state decided by the health monitor
+ * @param lastHeartbeat when the node was last heard from
  */
 public record NodeRecord(
         NodeInfo info,
@@ -35,7 +23,7 @@ public record NodeRecord(
         Instant lastHeartbeat
 ) {
 
-    /** A freshly registered node: NEW state, heartbeat stamped now. */
+    /** A freshly registered node: {@link NodeStatus#ONLINE}, heartbeat stamped now. */
     public static NodeRecord newlyRegistered(NodeInfo info, ResourceStatus initialStatus) {
         Objects.requireNonNull(info, "info");
         Objects.requireNonNull(initialStatus, "initialStatus");
@@ -54,7 +42,7 @@ public record NodeRecord(
         return new NodeRecord(info, status, state, Instant.now());
     }
 
-    /** Convenience: is this node currently a valid scheduling candidate? */
+    /** Only {@link NodeStatus#ONLINE} nodes receive new work. */
     public boolean isSchedulable() {
         return state == NodeStatus.ONLINE;
     }

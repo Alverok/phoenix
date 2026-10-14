@@ -87,10 +87,7 @@ public class TaskDispatcherExhaustedAttemptsTest {
                         Map.of("stub", adapter)
                 ),
                 journal,
-                new TaskRecoveryManager(
-                        registry,
-                        scheduler
-                ),
+                new TaskRecoveryManager(),
                 pending,
                 reservations
         );
