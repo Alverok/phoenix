@@ -27,7 +27,7 @@ dependencies {
     // MapBinder used in PhoenixModule ships inside the core guice jar (no separate
     // guice-multibindings artifact needed since Guice 4.0+).
     implementation("com.google.inject:guice:7.0.0")
-    implementation("com.google.code.gson:gson:2.10.1")
+    implementation("com.google.code.gson:gson:2.14.0")
     implementation("com.googlecode.lanterna:lanterna:3.1.5")
     testImplementation(platform("org.junit:junit-bom:5.10.2"))
     testImplementation("org.junit.jupiter:junit-jupiter")
