@@ -1,0 +1,64 @@
+name: Release
+
+on:
+  push:
+    tags: ["v*.*.*"]
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  release:
+    name: Build and publish
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-java@v6
+        with:
+          distribution: temurin
+          java-version: "21"
+
+      - uses: gradle/actions/setup-gradle@v6
+        with:
+          cache-provider: basic
+
+      - name: Check tag matches project version
+        run: |
+          version=$(./gradlew -q --no-daemon properties | sed -n 's/^version: //p')
+          if [ "v${version}" != "${GITHUB_REF_NAME}" ]; then
+            echo "::error::Tag ${GITHUB_REF_NAME} does not match project version ${version}"
+            exit 1
+          fi
+          echo "VERSION=${version}" >> "$GITHUB_ENV"
+
+      - name: Build
+        run: ./gradlew --no-daemon --console=plain clean build
+
+      - name: Extract release notes
+        run: |
+          awk -v v="${VERSION}" '
+            index($0, "## [" v "]") == 1 { found = 1; next }
+            /^## \[/ { found = 0 }
+            found
+          ' CHANGELOG.md > release-notes.md
+          if [ ! -s release-notes.md ]; then
+            echo "::error::CHANGELOG.md has no section for ${VERSION}"
+            exit 1
+          fi
+
+      - name: Publish GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "${GITHUB_REF_NAME}" \
+            build/distributions/phoenix-${VERSION}.zip \
+            build/distributions/phoenix-${VERSION}.tar \
+            --title "Phoenix Core ${GITHUB_REF_NAME}" \
+            --notes-file release-notes.md \
+            --verify-tag

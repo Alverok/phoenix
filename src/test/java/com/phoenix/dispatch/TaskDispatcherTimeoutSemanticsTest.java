@@ -110,7 +110,7 @@ class TaskDispatcherTimeoutSemanticsTest {
                             registry,
                             new AdapterRegistry(Map.of("stub", adapter)),
                             new TaskJournal(),
-                            new TaskRecoveryManager(registry, scheduler),
+                            new TaskRecoveryManager(),
                             pendingQueue,
                             reservations);
         }

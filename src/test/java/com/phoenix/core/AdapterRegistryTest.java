@@ -13,10 +13,8 @@ import com.phoenix.adapter.impl.Esp32Adapter;
 import com.phoenix.adapter.impl.LinuxAdapter;
 
 /**
- * Proves AdapterRegistry replaces Day 1's "one active adapter selected by
- * system property" with "resolve any adapter type on demand", which is what
- * lets TaskDispatcher route different tasks to different hardware classes
- * within the same JVM run.
+ * Every hardware class wired in {@link PhoenixModule} resolves to its adapter
+ * within one injector, and unknown types fail fast.
  */
 class AdapterRegistryTest {
 

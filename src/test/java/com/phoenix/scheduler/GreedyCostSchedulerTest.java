@@ -203,4 +203,85 @@ class GreedyCostSchedulerTest {
 
         assertTrue(scheduler.selectNode(task, List.of()).isEmpty());
     }
+
+    @Test
+    void aNodeIsSelectedEvenWhenEveryCostIsNaN() {
+        PlacementCostModel undefined = new PlacementCostModel() {
+            @Override
+            public double cost(NodeRecord node, TaskDescriptor task) {
+                return Double.NaN;
+            }
+
+            @Override
+            public CostBreakdown breakdown(NodeRecord node, TaskDescriptor task) {
+                return new CostBreakdown(node.nodeId(), 0, 0, 0, 0, Double.NaN);
+            }
+        };
+
+        NodeRecord only = node(
+                "n1",
+                "Only",
+                4,
+                8_000,
+                ResourceStatus.of(10.0, 8_000, 0, 0, 5.0, 1.0));
+
+        Optional<NodeRecord> selected = new GreedyCostScheduler(undefined)
+                .selectNode(new TaskDescriptor("task-1", "test", 1, 128), List.of(only));
+
+        assertEquals("n1", selected.orElseThrow().nodeId());
+    }
+
+    @Test
+    void aNodeWithARealCostBeatsOneWhoseCostIsNaN() {
+        PlacementCostModel partlyUndefined = new PlacementCostModel() {
+            @Override
+            public double cost(NodeRecord node, TaskDescriptor task) {
+                return breakdown(node, task).total();
+            }
+
+            @Override
+            public CostBreakdown breakdown(NodeRecord node, TaskDescriptor task) {
+                double total = node.nodeId().equals("nan") ? Double.NaN : 100.0;
+                return new CostBreakdown(node.nodeId(), 0, 0, 0, 0, total);
+            }
+        };
+
+        ResourceStatus status = ResourceStatus.of(10.0, 8_000, 0, 0, 5.0, 1.0);
+
+        Optional<NodeRecord> selected = new GreedyCostScheduler(partlyUndefined)
+                .selectNode(
+                        new TaskDescriptor("task-1", "test", 1, 128),
+                        List.of(node("nan", "NaN", 4, 8_000, status),
+                                node("real", "Real", 4, 8_000, status)));
+
+        assertEquals("real", selected.orElseThrow().nodeId());
+    }
+
+    @Test
+    void aNodeWithAnInfiniteCostBeatsOneWhoseCostIsNaN() {
+        PlacementCostModel model = new PlacementCostModel() {
+            @Override
+            public double cost(NodeRecord node, TaskDescriptor task) {
+                return breakdown(node, task).total();
+            }
+
+            @Override
+            public CostBreakdown breakdown(NodeRecord node, TaskDescriptor task) {
+                double total = node.nodeId().equals("nan")
+                        ? Double.NaN
+                        : Double.POSITIVE_INFINITY;
+                return new CostBreakdown(node.nodeId(), 0, 0, 0, 0, total);
+            }
+        };
+
+        ResourceStatus status = ResourceStatus.of(10.0, 8_000, 0, 0, 5.0, 1.0);
+
+        Optional<NodeRecord> selected = new GreedyCostScheduler(model)
+                .selectNode(
+                        new TaskDescriptor("task-1", "test", 1, 128),
+                        List.of(node("nan", "NaN", 4, 8_000, status),
+                                node("inf", "Inf", 4, 8_000, status)));
+
+        assertEquals("inf", selected.orElseThrow().nodeId());
+    }
 }

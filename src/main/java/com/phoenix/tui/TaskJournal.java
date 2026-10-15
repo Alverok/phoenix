@@ -11,8 +11,19 @@ import com.google.inject.Singleton;
 import com.phoenix.model.TaskDescriptor;
 import com.phoenix.model.TaskResult;
 
+/**
+ * Display-side record of recent tasks for the operator console.
+ *
+ * <p>Not authoritative: lifecycle truth lives in
+ * {@link com.phoenix.core.TaskLifecycleService}. Retention is bounded so a
+ * long-running Core does not accumulate every task it has ever seen; once
+ * {@link #MAX_ENTRIES} is exceeded the oldest submissions are dropped.
+ */
 @Singleton
 public class TaskJournal {
+
+    /** Upper bound on retained tasks. */
+    public static final int MAX_ENTRIES = 256;
 
     private final Map<String, TaskState> tasks =
             new ConcurrentHashMap<>();
@@ -32,6 +43,29 @@ public class TaskJournal {
                         null
                 )
         );
+
+        evictOldest();
+    }
+
+    /** Number of tasks currently retained. */
+    public int size() {
+        return tasks.size();
+    }
+
+    private synchronized void evictOldest() {
+        int excess = tasks.size() - MAX_ENTRIES;
+
+        if (excess <= 0) {
+            return;
+        }
+
+        tasks.values()
+                .stream()
+                .sorted(Comparator.comparing(TaskState::submittedAt))
+                .limit(excess)
+                .map(TaskState::taskId)
+                .toList()
+                .forEach(tasks::remove);
     }
 
     public void assigned(

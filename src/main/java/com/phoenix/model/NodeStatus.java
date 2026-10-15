@@ -1,29 +1,32 @@
 package com.phoenix.model;
 
 /**
- * Lifecycle state of a registered node, mirroring the Oakestra-style
- * worker lifecycle called out in the design discussion:
+ * Lifecycle state of a registered node.
  *
  * <pre>
- * NEW -&gt; REGISTERING -&gt; ONLINE &lt;-&gt; DEGRADED -&gt; OFFLINE
+ * ONLINE --(no heartbeat 20s)--&gt; DEGRADED --(no heartbeat 60s)--&gt; OFFLINE
+ *   ^                               |                                |
+ *   +---------- heartbeat ----------+-------------- heartbeat -------+
  * </pre>
  *
- * <p>Day 2 does not run a real background heartbeat monitor thread, but the
- * data model and {@link com.phoenix.core.DeviceRegistry} API already speak
- * this vocabulary so a future heartbeat-timeout watcher (Day 3+) only has to
- * plug in a state transition, not redesign the registry.
+ * <p>Transitions are decided by {@link com.phoenix.core.NodeHealthMonitor};
+ * the registry only stores the result. Registration is synchronous, so a node
+ * enters the registry directly as {@link #ONLINE}.
  */
 public enum NodeStatus {
-    /** Registration request received but not yet confirmed. */
-    NEW,
-    /** Enrollment in progress (identity being assigned/confirmed). */
-    REGISTERING,
-    /** Node is registered and heartbeating normally; eligible for new work. */
+
+    /** Heartbeating normally; eligible for new work. */
     ONLINE,
-    /** Node is known but health is uncertain; retained for recovery but not
-     *  eligible for new work until a heartbeat restores ONLINE state. */
+
+    /**
+     * Heartbeats are late. The node may still be running work, so nothing in
+     * flight is cancelled, but it receives no new work until it recovers.
+     */
     DEGRADED,
-    /** Node has not been heard from within the failure window and is not
-     *  eligible for scheduling. */
+
+    /**
+     * Declared gone. Not schedulable, and every unfinished attempt bound to
+     * it is abandoned.
+     */
     OFFLINE
 }

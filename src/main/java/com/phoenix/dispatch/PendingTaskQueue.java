@@ -6,6 +6,7 @@ import java.time.Instant;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Objects;
 
 import com.google.inject.Inject;
 import com.google.inject.Singleton;
@@ -18,7 +19,7 @@ import com.phoenix.model.TaskFailureReason;
  *
  * <p>Backed by LinkedHashMap: O(1)-average lookup/removal by task ID while
  * preserving strict insertion order for FIFO recovery. Synchronized because
- * TUI submission threads and the PendingTaskScheduler tick thread both
+ * the admission thread and the dispatcher execution threads both
  * touch this concurrently.
  *
  * <h2>The waiting window</h2>
@@ -62,13 +63,29 @@ public class PendingTaskQueue {
         );
     }
 
-    /** Test seam: deterministic time and limits. */
+    /**
+     * Test seam: deterministic time and limits.
+     *
+     * @throws IllegalArgumentException if {@code maxWait} is not positive or
+     *         {@code maxFailedCycles} is below 1
+     */
     public PendingTaskQueue(
             Clock clock,
             Duration maxWait,
             int maxFailedCycles) {
 
-        this.clock = clock;
+        if (maxWait == null || maxWait.isZero() || maxWait.isNegative()) {
+            throw new IllegalArgumentException(
+                    "phoenix.noNodeWaitSeconds must be positive, was " + maxWait);
+        }
+
+        if (maxFailedCycles < 1) {
+            throw new IllegalArgumentException(
+                    "phoenix.maxRecoveryCycles must be at least 1, was "
+                            + maxFailedCycles);
+        }
+
+        this.clock = Objects.requireNonNull(clock, "clock");
         this.maxWait = maxWait;
         this.maxFailedCycles = maxFailedCycles;
     }

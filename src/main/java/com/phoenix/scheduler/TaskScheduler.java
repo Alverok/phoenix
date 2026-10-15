@@ -7,36 +7,23 @@ import com.phoenix.model.NodeRecord;
 import com.phoenix.model.TaskDescriptor;
 
 /**
- * The Phoenix "brain": picks which registered node should run a given task.
+ * Placement policy: chooses which node should run a task.
  *
- * <p>Deliberately an interface, not a single Greedy class, per the design
- * discussion (items 7-9): the end goal is a <em>pluggable scheduling
- * architecture</em>, not a specific algorithm.
- *
- * <pre>
- *                TaskScheduler
- *                     ▲
- *      ┌───────────────┼────────────────────┐
- *      │                │                    │
- * GreedyCostScheduler  MemeticPlacementScheduler   SustainabilityAwareScheduler
- *      (Day 2)              (future — Goudarzi)         (future — Chen et al.)
- * </pre>
- *
- * <p>{@link com.phoenix.dispatch.TaskDispatcher} depends only on this
- * interface, exactly the way {@link com.phoenix.adapter.IHardwareAdapter}
- * decouples the Core from concrete hardware — this is Unikraft's "modular
- * APIs, swappable implementations" lesson applied to the scheduling layer.
+ * <p>An interface so that the greedy baseline can later be compared against
+ * other policies (memetic, sustainability-aware) by changing one binding in
+ * {@link com.phoenix.core.PhoenixModule}. Core consumes it only through
+ * {@link com.phoenix.core.PlacementReservationService}.
  */
 public interface TaskScheduler {
 
     /**
-     * Selects the best candidate node for {@code task} out of
-     * {@code candidates}, or empty if none are eligible.
+     * Selects the best node for {@code task}.
      *
-     * <p>Callers should pass an already-filtered-for-liveness candidate list
-     * (e.g. {@code DeviceRegistry.listSchedulable()}); the scheduler is
-     * still responsible for capability eligibility (CPU/memory/hardware
-     * class fit) on top of that.
+     * <p>{@code candidates} are already filtered for liveness and reservable
+     * capacity; the scheduler still enforces every hard requirement in
+     * {@link com.phoenix.model.TaskRequirements}.
+     *
+     * @return the chosen node, or empty if no candidate is eligible
      */
     Optional<NodeRecord> selectNode(TaskDescriptor task, List<NodeRecord> candidates);
 }

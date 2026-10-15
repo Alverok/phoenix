@@ -14,19 +14,15 @@ import com.phoenix.model.NodeStatus;
 import com.phoenix.model.ResourceStatus;
 
 /**
- * Central, in-memory record of every node that has joined the Phoenix mesh
- * (Design doc, Sec. 4 "Device Registry & Discovery"; Day-2 milestone #1,
- * "The Memory").
+ * In-memory record of every node that has registered with Core.
  *
- * <p>Day-2 rule honored deliberately: entirely in-memory
- * ({@code ConcurrentHashMap<String, NodeRecord>}), no SQLite. The map is an
- * implementation detail; DeviceRegistry is the abstraction, so swapping the
- * backing store later does not change this class's public surface.
+ * <p>Holds a {@link NodeRecord} per node, combining static identity with the
+ * latest telemetry and lifecycle state, because placement needs both. The
+ * backing map is an implementation detail; a persistent store can replace it
+ * without changing this class's surface.
  *
- * <p>Stores {@link NodeRecord} (NodeInfo + ResourceStatus + NodeStatus +
- * heartbeat) rather than bare {@link NodeInfo}, per the design discussion:
- * the scheduler needs both static capability and live status, and bolting
- * live state onto NodeInfo later would have been awkward.
+ * <p>The registry stores state but owns no policy: lifecycle transitions are
+ * decided by {@link NodeHealthMonitor}.
  */
 @Singleton
 public class DeviceRegistry {
@@ -88,7 +84,7 @@ public class DeviceRegistry {
         return List.copyOf(nodes.values());
     }
 
-    /** Only nodes currently eligible for scheduling (ONLINE or DEGRADED). */
+    /** Nodes that may receive new work; see {@link NodeRecord#isSchedulable()}. */
     public List<NodeRecord> listSchedulable() {
         return nodes.values().stream()
                 .filter(NodeRecord::isSchedulable)

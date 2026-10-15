@@ -9,9 +9,15 @@ import com.phoenix.dispatch.TaskAdmission;
 import com.phoenix.net.RegistrationServer;
 import com.phoenix.tui.PhoenixTui;
 
+/**
+ * Phoenix Core entry point: wires the module, starts the node-agent gateway,
+ * health monitoring and task admission, then runs the operator console.
+ *
+ * <p>The gateway listens on {@code phoenix.port} (default 8080).
+ */
 public class App {
 
-    private static final int REGISTRATION_PORT = 8080;
+    private static final int DEFAULT_PORT = 8080;
 
     public static void main(String[] args)
             throws Exception {
@@ -45,7 +51,7 @@ public class App {
         inFlightReconciler.start();
 
         server.start(
-                REGISTRATION_PORT
+                Integer.getInteger("phoenix.port", DEFAULT_PORT)
         );
 
         nodeHealthMonitor.start();

@@ -39,13 +39,27 @@ public class GreedyCostScheduler implements TaskScheduler {
             return Optional.empty();
         }
 
-        NodeRecord best = null;
-        double bestCost = Double.POSITIVE_INFINITY;
+        NodeRecord best = eligible.get(0);
+        double bestCost = Double.NaN;
+        boolean firstCandidate = true;
         StringJoiner summary = new StringJoiner(" | ");
 
         for (NodeRecord node : eligible) {
             PlacementCostModel.CostBreakdown breakdown =
                     costModel.breakdown(node, task);
+
+            /*
+             * Double.compare orders NaN above every number, so a node whose
+             * cost cannot be computed is chosen only if no node has a real
+             * cost. The first candidate is always accepted with its own
+             * cost, so an eligible node is always selected.
+             */
+            if (firstCandidate
+                    || Double.compare(breakdown.total(), bestCost) < 0) {
+                bestCost = breakdown.total();
+                best = node;
+            }
+            firstCandidate = false;
 
             summary.add(
                     String.format(
@@ -58,11 +72,6 @@ public class GreedyCostScheduler implements TaskScheduler {
                             breakdown.networkLatency()
                     )
             );
-
-            if (breakdown.total() < bestCost) {
-                bestCost = breakdown.total();
-                best = node;
-            }
         }
 
         System.out.printf(

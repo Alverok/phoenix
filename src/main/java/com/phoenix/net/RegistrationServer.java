@@ -19,31 +19,32 @@ import com.phoenix.model.NodeRecord;
 import com.phoenix.model.NodeRegistrationRequest;
 import com.phoenix.model.NodeStatus;
 import com.phoenix.model.ResourceStatus;
-import com.phoenix.model.TaskDescriptor;
 import com.phoenix.model.TaskResult;
 import com.sun.net.httpserver.HttpExchange;
 import com.sun.net.httpserver.HttpServer;
 
 /**
- * Core-side HTTP gateway for Phoenix Node Agents.
+ * HTTP gateway through which node agents register, heartbeat, poll for work
+ * and report results.
  *
- * <p>The server intentionally knows about the transport format, but does not
- * perform scheduling or hardware-specific execution, and — per Issue #15 —
- * does not own node lifecycle policy either. It decodes REGISTER/HEARTBEAT
- * messages, extracts node/device identity, and translates the payload into
- * transport-neutral calls on {@link NodeTelemetryService}, which is the
- * single authoritative path into the Phoenix domain model shared by every
- * transport (HTTP today, MQTT/other later). Lifecycle transitions
- * (ONLINE/DEGRADED/OFFLINE) are decided by {@code NodeHealthMonitor}, not
- * here.
+ * <p>The gateway decodes the wire format and translates it into
+ * transport-neutral calls on {@link NodeTelemetryService} and
+ * {@link TaskQueueService}. It performs no scheduling and owns no lifecycle
+ * policy; ONLINE/DEGRADED/OFFLINE is decided by
+ * {@link com.phoenix.core.NodeHealthMonitor}.
  *
- * <p>{@code nodeIdByDeviceId} and {@code callbackAddressByNodeId} remain
- * HTTP-specific: they resolve this transport's device identity and push
- * callback routing, which is out of scope for the Issue #15 lifecycle
- * refactor.
+ * <p>The device-id mapping, push callback addresses and announced protocol
+ * features are specific to this transport and therefore live here.
+ *
+ * <p>The wire protocol is documented in {@code README.md} and
+ * {@code docs/linux-agent-protocol.md}. Request bodies are limited to
+ * {@value #MAX_BODY_BYTES} bytes.
  */
 @Singleton
 public class RegistrationServer {
+
+    /** Largest request body accepted on any endpoint. */
+    static final int MAX_BODY_BYTES = 64 * 1024;
 
     private final NodeTelemetryService nodeTelemetryService;
     private final TaskQueueService taskQueue;
@@ -53,7 +54,7 @@ public class RegistrationServer {
             new ConcurrentHashMap<>();
 
     private final Map<String, String> callbackAddressByNodeId =
-        new ConcurrentHashMap<>();
+            new ConcurrentHashMap<>();
 
     /** Protocol features each node announced at its latest registration. */
     private final Map<String, Set<String>> protocolFeaturesByNodeId =
@@ -162,11 +163,10 @@ public class RegistrationServer {
         );
     }
 
+    /** {@code host:port} a push node accepts tasks on, if it announced one. */
     public Optional<String> callbackAddressForNode(String nodeId) {
-        return Optional.ofNullable(
-            callbackAddressByNodeId.get(nodeId)
-    );
-}
+        return Optional.ofNullable(callbackAddressByNodeId.get(nodeId));
+    }
 
     private void handleRegister(HttpExchange exchange) throws IOException {
         if (!"POST".equalsIgnoreCase(exchange.getRequestMethod())) {
@@ -223,7 +223,6 @@ public class RegistrationServer {
 
                 rememberProtocolFeatures(announcement, existingNodeId);
 
-                // ADDED: refresh callback address when an existing device reconnects.
                 storeCallbackAddressIfPresent(
                         announcement,
                         existingNodeId,
@@ -273,7 +272,6 @@ public class RegistrationServer {
 
             rememberProtocolFeatures(announcement, nodeInfo.nodeId());
 
-            // ADDED: remember where this node can receive pushed tasks.
             storeCallbackAddressIfPresent(
                     announcement,
                     nodeInfo.nodeId(),
@@ -306,42 +304,36 @@ public class RegistrationServer {
                             + exception.getMessage()
             );
 
-            sendJson(
-                    exchange,
-                    400,
-                    "{\"status\":\"error\",\"message\":\""
-                            + escapeJson(exception.getMessage())
-                            + "\"}"
-            );
+            sendError(exchange, exception);
         }
     }
 
     private void storeCallbackAddressIfPresent(
-        DeviceAnnouncement announcement,
-        String nodeId,
-        HttpExchange exchange) {
+            DeviceAnnouncement announcement,
+            String nodeId,
+            HttpExchange exchange) {
 
-    if (announcement.callbackPort == null) {
-        return;
+        if (announcement.callbackPort == null) {
+            return;
+        }
+
+        String host =
+                exchange.getRemoteAddress()
+                        .getAddress()
+                        .getHostAddress();
+
+        callbackAddressByNodeId.put(
+                nodeId,
+                host + ":" + announcement.callbackPort
+        );
+
+        System.out.printf(
+                "[RegistrationServer] Node %s reachable for push at %s:%d%n",
+                nodeId,
+                host,
+                announcement.callbackPort
+        );
     }
-
-    String host =
-            exchange.getRemoteAddress()
-                    .getAddress()
-                    .getHostAddress();
-
-    callbackAddressByNodeId.put(
-            nodeId,
-            host + ":" + announcement.callbackPort
-    );
-
-    System.out.printf(
-            "[RegistrationServer] Node %s reachable for push at %s:%d%n",
-            nodeId,
-            host,
-            announcement.callbackPort
-    );
-}
 
     private void handleHeartbeat(HttpExchange exchange) throws IOException {
         if (!"POST".equalsIgnoreCase(exchange.getRequestMethod())) {
@@ -382,10 +374,11 @@ public class RegistrationServer {
                 return;
             }
 
-            // Keep an unknown Android CPU value as unknown (-1) rather than
-            // inventing a 50% utilization figure. The cost model handles the
-            // unknown signal explicitly.
-            double cpuUsage = heartbeat.cpuUsagePercent;
+            // A missing or negative value means "cannot measure", never 0%.
+            double cpuUsage =
+                    heartbeat.cpuUsagePercent == null
+                            ? ResourceStatus.CPU_UNKNOWN
+                            : heartbeat.cpuUsagePercent;
 
             ResourceStatus status = ResourceStatus.of(
                     cpuUsage,
@@ -431,10 +424,10 @@ public class RegistrationServer {
             System.out.printf(
                     "[RegistrationServer] Heartbeat from %s: cpu=%s freeRam=%dMB%n",
                     heartbeat.deviceId,
-                    heartbeat.cpuUsagePercent >= 0
+                    cpuUsage >= 0
                             ? String.format(
                                     "%.1f%%",
-                                    heartbeat.cpuUsagePercent
+                                    cpuUsage
                             )
                             : "N/A",
                     heartbeat.availableRamMb
@@ -454,85 +447,66 @@ public class RegistrationServer {
                             + exception.getMessage()
             );
 
-            sendJson(
-                    exchange,
-                    400,
-                    "{\"status\":\"error\",\"message\":\""
-                            + escapeJson(exception.getMessage())
-                            + "\"}"
-            );
+            sendError(exchange, exception);
         }
     }
 
     /**
-     * Poll for the next task assigned to a specific device.
+     * Hands the next task queued for a device to that device.
      *
-     * GET /tasks/poll?deviceId=<device-id>
-     *
-     * Returns:
-     *   200 + TaskDescriptor when a task exists
-     *   204 when the queue is empty
-     *   400 when deviceId is missing
-     *   404 when deviceId is unknown
+     * <p>{@code GET /tasks/poll?deviceId=<id>} answers 200 with the task body
+     * (see {@link TaskWire}), 204 when there is nothing to deliver or the node
+     * is not ONLINE, 400 without a device id and 404 for an unknown device.
      */
     private void handlePoll(HttpExchange exchange) throws IOException {
         if (!"GET".equalsIgnoreCase(exchange.getRequestMethod())) {
-                exchange.sendResponseHeaders(405, -1);
-                return;
+            exchange.sendResponseHeaders(405, -1);
+            return;
         }
 
         try {
-                String query = exchange.getRequestURI().getQuery();
-                String deviceId = extractQueryParameter(query, "deviceId");
+            String deviceId = extractQueryParameter(
+                    exchange.getRequestURI().getQuery(),
+                    "deviceId");
 
-                if (deviceId == null || deviceId.isBlank()) {
-                sendJson(exchange, 400, "{\"status\":\"error\",\"message\":\"deviceId is required\"}");
+            if (deviceId == null || deviceId.isBlank()) {
+                sendError(exchange, 400, "deviceId is required");
                 return;
-                }
+            }
 
-                String nodeId = nodeIdByDeviceId.get(deviceId);
-                if (nodeId == null) {
-                sendJson(exchange, 404, "{\"status\":\"error\",\"message\":\"unknown_device\"}");
+            String nodeId = nodeIdByDeviceId.get(deviceId);
+            if (nodeId == null) {
+                sendError(exchange, 404, "unknown_device");
                 return;
-                }
+            }
 
-                // Issue #28: a polling node is a reachable node, whether or not
-                // Core currently hands it work. This is the transport's contact
-                // evidence for telling queue backlog from an unreachable node.
-                taskQueue.recordPoll(deviceId);
+            // A polling node is in contact even when it receives no work; this
+            // is what separates queue backlog from an unreachable node.
+            taskQueue.recordPoll(deviceId);
 
-                Optional<NodeRecord> record = nodeTelemetryService.get(nodeId);
-                if (record.isEmpty() || record.get().state() != NodeStatus.ONLINE) {
+            Optional<NodeRecord> record = nodeTelemetryService.get(nodeId);
+            if (record.isEmpty() || record.get().state() != NodeStatus.ONLINE) {
                 exchange.sendResponseHeaders(204, -1);
                 return;
-                }
+            }
 
-                Optional<TaskQueueService.Delivery> delivery = taskQueue.pollDelivery(deviceId);
-                if (delivery.isEmpty()) {
+            Optional<TaskQueueService.Delivery> delivery = taskQueue.pollDelivery(deviceId);
+            if (delivery.isEmpty()) {
                 exchange.sendResponseHeaders(204, -1);
                 return;
-                }
+            }
 
-                TaskDescriptor descriptor = delivery.get().task();
-                // Hand-built JSON — sidesteps any Gson record-serialization surprises
-                // and matches the documented protocol shape exactly (id/type/samples).
-                String json = String.format(
-                        "{\"taskId\":\"%s\",\"type\":\"%s\",\"samples\":2000000%s}",
-                        escapeJson(descriptor.id()), escapeJson(descriptor.type()),
-                        // Attempt identity, only for nodes that announced "attempt-id"
-                        AttemptWire.jsonFields(
-                                delivery.get().fencing(),
-                                delivery.get().attemptId(),
-                                delivery.get().attemptNumber()));
+            sendJson(exchange, 200, TaskWire.taskBody(
+                    delivery.get().task(),
+                    delivery.get().fencing(),
+                    delivery.get().attemptId(),
+                    delivery.get().attemptNumber()));
 
-                sendJson(exchange, 200, json);
-
-        } catch (Exception e) {
-                System.out.println("[RegistrationServer] /tasks/poll crashed: " + e);
-                e.printStackTrace();
-                sendJson(exchange, 500, "{\"status\":\"error\",\"message\":\"" + escapeJson(e.getMessage()) + "\"}");
+        } catch (Exception exception) {
+            System.out.println("[RegistrationServer] /tasks/poll failed: " + exception);
+            sendError(exchange, 500, exception.getMessage());
         }
-        }
+    }
 
     /**
      * Optional node acknowledgement that execution of a delivered task began.
@@ -576,13 +550,7 @@ public class RegistrationServer {
             sendJson(exchange, 200, "{\"status\":\"ok\"}");
 
         } catch (Exception exception) {
-            sendJson(
-                    exchange,
-                    400,
-                    "{\"status\":\"error\",\"message\":\""
-                            + escapeJson(exception.getMessage())
-                            + "\"}"
-            );
+            sendError(exchange, exception);
         }
     }
 
@@ -688,41 +656,65 @@ public class RegistrationServer {
             );
 
         } catch (Exception exception) {
-            sendJson(
-                    exchange,
-                    400,
-                    "{\"status\":\"error\",\"message\":\""
-                            + escapeJson(exception.getMessage())
-                            + "\"}"
-            );
+            sendError(exchange, exception);
         }
     }
 
     /**
-     * Transport representation of a result received from a Node Agent.
-     *
-     * executionTimeMs is accepted from the HTTP payload for forward
-     * compatibility, but is not currently part of TaskResult.
+     * Result posted by a node agent. Agents also send {@code executionTimeMs};
+     * it is not part of {@link TaskResult} yet, so the field is ignored.
      */
     private static class ResultBody {
         String taskId;
         String status;
         String outputData;
-        long executionTimeMs;
 
         /** Optional echo of the attemptId Core sent with the task. */
         String attemptId;
     }
 
+    /**
+     * Reads the request body, refusing anything larger than
+     * {@link #MAX_BODY_BYTES} so a misbehaving client cannot exhaust memory.
+     */
     private static String readBody(
             HttpExchange exchange) throws IOException {
 
         try (var inputStream = exchange.getRequestBody()) {
-            return new String(
-                    inputStream.readAllBytes(),
-                    StandardCharsets.UTF_8
-            );
+            byte[] bytes = inputStream.readNBytes(MAX_BODY_BYTES + 1);
+
+            if (bytes.length > MAX_BODY_BYTES) {
+                throw new BodyTooLargeException();
+            }
+
+            return new String(bytes, StandardCharsets.UTF_8);
         }
+    }
+
+    /** 413 for an oversized body, otherwise 400 with the exception message. */
+    private static void sendError(
+            HttpExchange exchange,
+            Exception exception) throws IOException {
+
+        if (exception instanceof BodyTooLargeException) {
+            sendError(exchange, 413, "request_body_too_large");
+        } else {
+            sendError(exchange, 400, exception.getMessage());
+        }
+    }
+
+    private static void sendError(
+            HttpExchange exchange,
+            int statusCode,
+            String message) throws IOException {
+
+        sendJson(
+                exchange,
+                statusCode,
+                "{\"status\":\"error\",\"message\":\""
+                        + JsonText.escape(message)
+                        + "\"}"
+        );
     }
 
     private static void sendJson(
@@ -776,6 +768,21 @@ public class RegistrationServer {
             );
         }
 
+        if (announcement.adapterType == null
+                || announcement.adapterType.isBlank()) {
+            throw new IllegalArgumentException(
+                    "adapterType is required"
+            );
+        }
+
+        if (announcement.callbackPort != null
+                && (announcement.callbackPort < 1
+                        || announcement.callbackPort > 65_535)) {
+            throw new IllegalArgumentException(
+                    "callbackPort must be between 1 and 65535"
+            );
+        }
+
         if (announcement.cpuCores <= 0) {
             throw new IllegalArgumentException(
                     "cpuCores must be greater than zero"
@@ -789,20 +796,22 @@ public class RegistrationServer {
         }
     }
 
-    private static String escapeJson(String value) {
-        if (value == null) {
-            return "";
-        }
+    /** Raised by {@link #readBody} for a body above {@link #MAX_BODY_BYTES}. */
+    private static final class BodyTooLargeException extends IOException {
 
-        return value
-                .replace("\\", "\\\\")
-                .replace("\"", "\\\"");
+        private static final long serialVersionUID = 1L;
+
+        BodyTooLargeException() {
+            super("request body exceeds " + MAX_BODY_BYTES + " bytes");
+        }
     }
 
+    /** Heartbeat posted by a node agent. */
     public static class HeartbeatMessage {
 
         public String deviceId;
-        public double cpuUsagePercent;
+        /** Optional; absent means the agent cannot measure it. */
+        public Double cpuUsagePercent;
         public long availableRamMb;
         public int activeTasks;
         public int queueLength;

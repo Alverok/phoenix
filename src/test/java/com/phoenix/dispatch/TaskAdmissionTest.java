@@ -330,10 +330,7 @@ class TaskAdmissionTest {
                 new TaskJournal();
 
         TaskRecoveryManager recoveryManager =
-                new TaskRecoveryManager(
-                        registry,
-                        scheduler
-                );
+                new TaskRecoveryManager();
 
         PendingTaskQueue pendingQueue =
                 new PendingTaskQueue();
@@ -444,10 +441,7 @@ class TaskAdmissionTest {
                 new TaskJournal();
 
         TaskRecoveryManager recoveryManager =
-                new TaskRecoveryManager(
-                        registry,
-                        scheduler
-                );
+                new TaskRecoveryManager();
 
         PendingTaskQueue pendingQueue =
                 new PendingTaskQueue();
