@@ -39,8 +39,9 @@ public class GreedyCostScheduler implements TaskScheduler {
             return Optional.empty();
         }
 
-        NodeRecord best = null;
+        NodeRecord best = eligible.get(0);
         double bestCost = Double.NaN;
+        boolean firstCandidate = true;
         StringJoiner summary = new StringJoiner(" | ");
 
         for (NodeRecord node : eligible) {
@@ -50,13 +51,15 @@ public class GreedyCostScheduler implements TaskScheduler {
             /*
              * Double.compare orders NaN above every number, so a node whose
              * cost cannot be computed is chosen only if no node has a real
-             * cost, and an eligible node is always selected.
+             * cost. The first candidate is always accepted with its own
+             * cost, so an eligible node is always selected.
              */
-            if (best == null
+            if (firstCandidate
                     || Double.compare(breakdown.total(), bestCost) < 0) {
                 bestCost = breakdown.total();
                 best = node;
             }
+            firstCandidate = false;
 
             summary.add(
                     String.format(
