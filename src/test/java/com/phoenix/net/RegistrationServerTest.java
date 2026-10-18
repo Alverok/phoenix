@@ -15,6 +15,7 @@ import org.junit.jupiter.api.Test;
 
 import com.google.gson.JsonParser;
 import com.phoenix.core.DeviceRegistry;
+import com.phoenix.core.NodeAttachments;
 import com.phoenix.core.NodeHealthMonitor;
 import com.phoenix.core.NodeTelemetryService;
 import com.phoenix.core.TaskLifecycleService;
@@ -28,14 +29,17 @@ class RegistrationServerTest {
     private final HttpClient http = HttpClient.newHttpClient();
 
     private DeviceRegistry registry;
+    private NodeAttachments attachments;
     private RegistrationServer server;
 
     @BeforeEach
     void start() throws Exception {
         registry = new DeviceRegistry();
+        attachments = new NodeAttachments();
         server = new RegistrationServer(
                 new NodeTelemetryService(registry, new NodeHealthMonitor(registry)),
-                new TaskQueueService(new TaskLifecycleService()));
+                new TaskQueueService(new TaskLifecycleService()),
+                attachments);
         server.start(0);
     }
 
@@ -128,6 +132,29 @@ class RegistrationServerTest {
                 "{\"deviceId\":\"" + DEVICE_ID + "\",\"cpuUsagePercent\":37.5}");
 
         assertEquals(37.5, registry.get(nodeId).orElseThrow().status().cpuUsagePercent());
+    }
+
+    @Test
+    void aDeviceThatRegisteredOverAnotherTransportKeepsItsNode() throws Exception {
+        attachments.attach(DEVICE_ID, "mqtt", () -> "node-from-mqtt");
+
+        HttpResponse<String> response = post("/register", registration(""));
+
+        assertEquals(200, response.statusCode());
+        assertTrue(response.body().contains("\"nodeId\":\"node-from-mqtt\""));
+        assertTrue(response.body().contains("already_registered"));
+        assertEquals(java.util.Optional.of(RegistrationServer.TRANSPORT_ID),
+                attachments.transportOf("node-from-mqtt"));
+        assertEquals(0, registry.size());
+    }
+
+    @Test
+    void aNewDeviceIsAttachedAsAnHttpNode() throws Exception {
+        String nodeId = registerAndGetNodeId();
+
+        assertEquals(java.util.Optional.of(RegistrationServer.TRANSPORT_ID),
+                attachments.transportOf(nodeId));
+        assertEquals(java.util.Optional.of(DEVICE_ID), server.deviceIdForNode(nodeId));
     }
 
     private HttpResponse<String> post(String path, String json) throws Exception {

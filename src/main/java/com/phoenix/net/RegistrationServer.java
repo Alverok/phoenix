@@ -14,6 +14,7 @@ import com.google.gson.Gson;
 import com.google.inject.Inject;
 import com.google.inject.Singleton;
 import com.phoenix.core.AttemptFencing;
+import com.phoenix.core.NodeAttachments;
 import com.phoenix.core.NodeTelemetryService;
 import com.phoenix.model.NodeRecord;
 import com.phoenix.model.NodeRegistrationRequest;
@@ -33,8 +34,10 @@ import com.sun.net.httpserver.HttpServer;
  * policy; ONLINE/DEGRADED/OFFLINE is decided by
  * {@link com.phoenix.core.NodeHealthMonitor}.
  *
- * <p>The device-id mapping, push callback addresses and announced protocol
- * features are specific to this transport and therefore live here.
+ * <p>Push callback addresses and announced protocol features are specific to
+ * this transport and therefore live here. Which device is which node is
+ * shared with every other transport through {@link NodeAttachments}, so a
+ * device keeps one node identity whichever transport it registers through.
  *
  * <p>The wire protocol is documented in {@code README.md} and
  * {@code docs/linux-agent-protocol.md}. Request bodies are limited to
@@ -46,12 +49,13 @@ public class RegistrationServer {
     /** Largest request body accepted on any endpoint. */
     static final int MAX_BODY_BYTES = 64 * 1024;
 
+    /** Transport id recorded in {@link NodeAttachments} for HTTP nodes. */
+    public static final String TRANSPORT_ID = "http";
+
     private final NodeTelemetryService nodeTelemetryService;
     private final TaskQueueService taskQueue;
+    private final NodeAttachments attachments;
     private final Gson gson = new Gson();
-
-    private final Map<String, String> nodeIdByDeviceId =
-            new ConcurrentHashMap<>();
 
     private final Map<String, String> callbackAddressByNodeId =
             new ConcurrentHashMap<>();
@@ -62,13 +66,23 @@ public class RegistrationServer {
 
     private HttpServer server;
 
-    @Inject
+    /** A gateway with its own, unshared device-to-node table (tests). */
     public RegistrationServer(
             NodeTelemetryService nodeTelemetryService,
             TaskQueueService taskQueue) {
 
+        this(nodeTelemetryService, taskQueue, new NodeAttachments());
+    }
+
+    @Inject
+    public RegistrationServer(
+            NodeTelemetryService nodeTelemetryService,
+            TaskQueueService taskQueue,
+            NodeAttachments attachments) {
+
         this.nodeTelemetryService = nodeTelemetryService;
         this.taskQueue = taskQueue;
+        this.attachments = attachments;
     }
 
     public void start(int port) throws IOException {
@@ -108,11 +122,7 @@ public class RegistrationServer {
     }
 
     public Optional<String> deviceIdForNode(String nodeId) {
-        return nodeIdByDeviceId.entrySet()
-                .stream()
-                .filter(entry -> entry.getValue().equals(nodeId))
-                .map(Map.Entry::getKey)
-                .findFirst();
+        return attachments.deviceIdFor(nodeId);
     }
 
     /**
@@ -185,7 +195,13 @@ public class RegistrationServer {
             DeviceAnnouncement announcement =
                     gson.fromJson(body, DeviceAnnouncement.class);
 
-            validateAnnouncement(announcement);
+            if (announcement == null) {
+                throw new IllegalArgumentException(
+                        "request body is required"
+                );
+            }
+
+            announcement.validate();
 
             if (attemptIdRequired()
                     && (announcement.protocolFeatures == null
@@ -205,36 +221,6 @@ public class RegistrationServer {
                         400,
                         "{\"status\":\"error\",\"message\":"
                                 + "\"attempt_id_required\"}"
-                );
-                return;
-            }
-
-            if (nodeIdByDeviceId.containsKey(announcement.deviceId)) {
-                String existingNodeId =
-                        nodeIdByDeviceId.get(announcement.deviceId);
-
-                nodeTelemetryService.get(existingNodeId).ifPresent(record -> {
-                    System.out.printf(
-                            "[RegistrationServer] Device %s already registered as node %s%n",
-                            announcement.deviceId,
-                            existingNodeId
-                    );
-                });
-
-                rememberProtocolFeatures(announcement, existingNodeId);
-
-                storeCallbackAddressIfPresent(
-                        announcement,
-                        existingNodeId,
-                        exchange
-                );
-
-                sendJson(
-                        exchange,
-                        200,
-                        "{\"status\":\"ok\",\"nodeId\":\""
-                                + existingNodeId
-                                + "\",\"message\":\"already_registered\"}"
                 );
                 return;
             }
@@ -263,18 +249,66 @@ public class RegistrationServer {
                             initialStatus
                     );
 
-            var nodeInfo = nodeTelemetryService.register(request);
+        // `previousTransport` is read separately from the atomic attachment operation,
+        // so it can be stale, hence held out in this refactor (need to be verified).
 
-            nodeIdByDeviceId.put(
-                    announcement.deviceId,
-                    nodeInfo.nodeId()
-            );
+        //     Optional<String> previousTransport =
+        //             attachments.nodeIdFor(announcement.deviceId)
+        //                     .flatMap(attachments::transportOf);
 
-            rememberProtocolFeatures(announcement, nodeInfo.nodeId());
+            NodeAttachments.Attachment attachment =
+                    attachments.attach(
+                            announcement.deviceId,
+                            TRANSPORT_ID,
+                            () -> nodeTelemetryService
+                                    .register(request)
+                                    .nodeId()
+                    );
+
+            String nodeId = attachment.nodeId();
+
+            if (!attachment.created()) {
+
+                // System.out.printf(
+                //         "[RegistrationServer] Device %s already registered as node %s%s%n",
+                //         announcement.deviceId,
+                //         nodeId,
+                //         previousTransport
+                //                 .filter(previous -> !TRANSPORT_ID.equals(previous))
+                //                 .map(previous -> " (moved from " + previous + " to "
+                //                         + TRANSPORT_ID + ")")
+                //                 .orElse("")
+                // );
+
+                System.out.printf(
+                        "[RegistrationServer] Device %s already registered as node %s%n",
+                        announcement.deviceId,
+                        nodeId
+                );
+
+                rememberProtocolFeatures(announcement, nodeId);
+
+                storeCallbackAddressIfPresent(
+                        announcement,
+                        nodeId,
+                        exchange
+                );
+
+                sendJson(
+                        exchange,
+                        200,
+                        "{\"status\":\"ok\",\"nodeId\":\""
+                                + nodeId
+                                + "\",\"message\":\"already_registered\"}"
+                );
+                return;
+            }
+
+            rememberProtocolFeatures(announcement, nodeId);
 
             storeCallbackAddressIfPresent(
                     announcement,
-                    nodeInfo.nodeId(),
+                    nodeId,
                     exchange
             );
 
@@ -286,7 +320,7 @@ public class RegistrationServer {
             System.out.printf(
                     "[RegistrationServer] Device registered: %s nodeId=%s source=%s%n",
                     announcement.displayName,
-                    nodeInfo.nodeId(),
+                    nodeId,
                     remoteAddress
             );
 
@@ -294,7 +328,7 @@ public class RegistrationServer {
                     exchange,
                     200,
                     "{\"status\":\"ok\",\"nodeId\":\""
-                            + nodeInfo.nodeId()
+                            + nodeId
                             + "\"}"
             );
 
@@ -361,7 +395,7 @@ public class RegistrationServer {
             }
 
             String nodeId =
-                    nodeIdByDeviceId.get(heartbeat.deviceId);
+                    attachments.nodeIdFor(heartbeat.deviceId).orElse(null);
 
             if (nodeId == null) {
                 sendJson(
@@ -374,26 +408,14 @@ public class RegistrationServer {
                 return;
             }
 
-            // A missing or negative value means "cannot measure", never 0%.
-            double cpuUsage =
-                    heartbeat.cpuUsagePercent == null
-                            ? ResourceStatus.CPU_UNKNOWN
-                            : heartbeat.cpuUsagePercent;
-
-            ResourceStatus status = ResourceStatus.of(
-                    cpuUsage,
-                    heartbeat.availableRamMb,
-                    heartbeat.activeTasks,
-                    heartbeat.queueLength,
-                    heartbeat.networkLatencyMs,
-                    heartbeat.energyCostEstimate
-            );
+            ResourceStatus status = heartbeat.toResourceStatus();
+            double cpuUsage = status.cpuUsagePercent();
 
             Optional<NodeRecord> existing =
                     nodeTelemetryService.get(nodeId);
 
             if (existing.isEmpty()) {
-                nodeIdByDeviceId.remove(heartbeat.deviceId);
+                attachments.detach(heartbeat.deviceId);
                 sendJson(
                         exchange,
                         404,
@@ -474,7 +496,7 @@ public class RegistrationServer {
                 return;
             }
 
-            String nodeId = nodeIdByDeviceId.get(deviceId);
+            String nodeId = attachments.nodeIdFor(deviceId).orElse(null);
             if (nodeId == null) {
                 sendError(exchange, 404, "unknown_device");
                 return;
@@ -739,63 +761,6 @@ public class RegistrationServer {
         }
     }
 
-    private static void validateAnnouncement(
-            DeviceAnnouncement announcement) {
-
-        if (announcement == null) {
-            throw new IllegalArgumentException(
-                    "request body is required"
-            );
-        }
-
-        if (announcement.deviceId == null
-                || announcement.deviceId.isBlank()) {
-            throw new IllegalArgumentException(
-                    "deviceId is required"
-            );
-        }
-
-        if (announcement.displayName == null
-                || announcement.displayName.isBlank()) {
-            throw new IllegalArgumentException(
-                    "displayName is required"
-            );
-        }
-
-        if (announcement.hardwareClass == null) {
-            throw new IllegalArgumentException(
-                    "hardwareClass is required"
-            );
-        }
-
-        if (announcement.adapterType == null
-                || announcement.adapterType.isBlank()) {
-            throw new IllegalArgumentException(
-                    "adapterType is required"
-            );
-        }
-
-        if (announcement.callbackPort != null
-                && (announcement.callbackPort < 1
-                        || announcement.callbackPort > 65_535)) {
-            throw new IllegalArgumentException(
-                    "callbackPort must be between 1 and 65535"
-            );
-        }
-
-        if (announcement.cpuCores <= 0) {
-            throw new IllegalArgumentException(
-                    "cpuCores must be greater than zero"
-            );
-        }
-
-        if (announcement.memoryMb <= 0) {
-            throw new IllegalArgumentException(
-                    "memoryMb must be greater than zero"
-            );
-        }
-    }
-
     /** Raised by {@link #readBody} for a body above {@link #MAX_BODY_BYTES}. */
     private static final class BodyTooLargeException extends IOException {
 
@@ -817,5 +782,30 @@ public class RegistrationServer {
         public int queueLength;
         public double networkLatencyMs;
         public double energyCostEstimate;
+
+        /**
+         * The resource snapshot this heartbeat reports, observed now.
+         *
+         * <p>A missing or negative {@code cpuUsagePercent} means the platform
+         * cannot measure it, never 0 %. Shared by every transport.
+         *
+         * @return the snapshot
+         */
+        public ResourceStatus toResourceStatus() {
+
+            double cpuUsage =
+                    cpuUsagePercent == null
+                            ? ResourceStatus.CPU_UNKNOWN
+                            : cpuUsagePercent;
+
+            return ResourceStatus.of(
+                    cpuUsage,
+                    availableRamMb,
+                    activeTasks,
+                    queueLength,
+                    networkLatencyMs,
+                    energyCostEstimate
+            );
+        }
     }
 }
