@@ -24,6 +24,7 @@ class TaskResultSemanticsTest {
                     TaskFailureReason.EXECUTION_TIMEOUT,
                     TaskFailureReason.NODE_UNREACHABLE,
                     TaskFailureReason.TRANSPORT_ERROR,
+                    TaskFailureReason.TRANSPORT_UNAVAILABLE,
                     TaskFailureReason.NODE_OFFLINE
             );
 
@@ -39,7 +40,8 @@ class TaskResultSemanticsTest {
      *
      * <p>NODE_OFFLINE is deliberately absent: it is derived from node
      * health (the node was already declared OFFLINE), so it must not be fed
-     * back into node health.
+     * back into node health. TRANSPORT_UNAVAILABLE is absent because it is a
+     * failure of Core's own transport, not of the node.
      */
     private static final Set<TaskFailureReason> IMPLICATE_NODE =
             EnumSet.of(
@@ -104,12 +106,23 @@ class TaskResultSemanticsTest {
     }
 
     @Test
+    void transportUnavailableIsRetryableButDoesNotImplicateTheNode() {
+
+        TaskResult result =
+                resultWith(TaskFailureReason.TRANSPORT_UNAVAILABLE);
+
+        assertTrue(result.isRetryable());
+        assertFalse(result.implicatesNodeHealth());
+    }
+
+    @Test
     void everyOtherRetryableFailureStillImplicatesTheNode() {
 
         for (TaskFailureReason reason : RETRYABLE) {
 
             if (reason == TaskFailureReason.DELIVERY_TIMEOUT
-                    || reason == TaskFailureReason.NODE_OFFLINE) {
+                    || reason == TaskFailureReason.NODE_OFFLINE
+                    || reason == TaskFailureReason.TRANSPORT_UNAVAILABLE) {
                 continue;
             }
 

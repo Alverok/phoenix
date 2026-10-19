@@ -3,6 +3,53 @@
 All notable changes to Phoenix Core. Versions follow [Semantic Versioning](https://semver.org/);
 while the major version is 0, minor versions may change the node-agent protocol.
 
+## [Unreleased]
+
+MQTT/TLS node-agent transport (#17: #18-#22). The HTTP transports are unchanged
+apart from sharing the device-to-node table.
+
+### Added
+
+- MQTT/TLS transport on Eclipse Paho 1.2.5 (`com.phoenix.net.mqtt`), enabled with
+  `phoenix.mqtt.url`. Protocol version 1 under `phoenix/v1/...` is specified in
+  `docs/mqtt-agent-protocol.md`.
+- Transport contract (#18): node-scoped topic namespace (`nodes/{deviceId}/up|down/{kind}`)
+  designed for per-device broker ACLs; JSON bodies shared with HTTP; `MqttConnection`
+  seam between the transport and the MQTT library.
+- Broker connectivity (#19): TLS with a PEM CA file and host name verification,
+  optional PKCS#12 client certificate, broker credentials from files or environment
+  variables, persistent session, background reconnect with an offline buffer, refusal
+  of plain TCP to a non-local broker. Core's presence is announced retained on
+  `core/status` with a last will.
+- Registration and telemetry (#20): optional enrollment token, a session token per
+  registration (stale agent copies are rejected), idempotent registration by
+  `requestId`, `reregister` prompts, heartbeats into the same telemetry and health path.
+- Task delivery and result correlation (#21): application-level `ack` as the delivery
+  boundary, so delivery/execution timeouts keep their HTTP meaning; mandatory attempt
+  fencing (attempt id, sending device and session token must all match); duplicate
+  reports are ignored; `cancel` when Core stops waiting.
+- Lifecycle integration (#22): abandonment on node `OFFLINE` wakes MQTT attempts at
+  once; the unchanged dispatcher re-places them.
+- `NodeTransportRouter`: a node is executed through the transport it registered with,
+  so an Android or Linux node can use MQTT and an ESP32 node can finally run tasks.
+- `TaskFailureReason.TRANSPORT_UNAVAILABLE`: Core's own broker link was down; retryable
+  and never held against the node.
+- `deploy/mosquitto`: Mosquitto configuration (loopback, TLS and optional TLS-PSK
+  listeners), ACL, certificate and device-account scripts.
+- `agents/python`: reference Linux agent for the MQTT/TLS protocol (paho-mqtt 2).
+- Console header shows the broker link (`MQTT ●`/`MQTT ○`).
+- Tests: in-memory broker unit tests, and integration tests against a real Mosquitto
+  with TLS, authentication, the shipped ACL, mutual TLS and a broker restart.
+
+### Changed
+
+- Which device is which node is kept in the transport-neutral `NodeAttachments`
+  table shared by every gateway, so a device keeps one node identity across transports.
+- `DeviceAnnouncement.validate()` and `HeartbeatMessage.toResourceStatus()` hold
+  validation and conversion shared by the HTTP and MQTT gateways.
+- `TaskWire` and `JsonText` are public so every transport builds the same task body.
+- CI installs Mosquitto so the broker integration tests run.
+
 ## [0.2.1] - 2026-10-14
 
 Hardening release that closes the v0.2 Core milestone before the MQTT/TLS transport work.
