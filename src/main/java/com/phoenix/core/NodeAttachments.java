@@ -74,7 +74,8 @@ public class NodeAttachments {
      * @param registerNew registers the device and returns the new node id;
      *        called at most once, and only for an unknown device. If it
      *        throws, nothing is recorded and the exception reaches the caller.
-     * @return the node id and whether it was created by this call
+     * @return the node id, whether this call created it, and the transport it
+     *          moved away from, read in the same step as the change
      * @throws IllegalStateException if {@code registerNew} returns a node id
      *         that already belongs to another device
      */
@@ -92,9 +93,15 @@ public class NodeAttachments {
             String existing = nodeIdByDeviceId.get(deviceId);
 
             if (existing != null) {
-                // One replacement: device and transport change together.
-                byNodeId.put(existing, new Entry(deviceId, transport));
-                return new Attachment(existing, false);
+                // One replacement: device and transport change together,
+                // and the previous transport is the one actually replaced.
+                Entry before = byNodeId.put(existing, new Entry(deviceId, transport));
+
+                Optional<String> movedFrom = Optional.ofNullable(before)
+                        .map(Entry::transport)
+                        .filter(previous -> !previous.equals(transport));
+
+                return new Attachment(existing, false, movedFrom);
             }
 
             String nodeId = Objects.requireNonNull(
@@ -109,7 +116,7 @@ public class NodeAttachments {
             // it complete.
             nodeIdByDeviceId.put(deviceId, nodeId);
 
-            return new Attachment(nodeId, true);
+            return new Attachment(nodeId, true, Optional.empty());
         }
     }
 
@@ -160,11 +167,16 @@ public class NodeAttachments {
     /**
      * Result of {@link #attach}.
      *
-     * @param nodeId  the node the device is attached as
-     * @param created true if this call registered the node
+     * @param nodeId    the node the device is attached as
+     * @param created   true if this call registered the node
+     * @param movedFrom the transport the node was reached through until this
+     *                  call, if this call changed it; empty for a new node or
+     *                  an unchanged transport. Taken under the same lock as
+     *                  the change, so it is never stale.
      */
     public record Attachment(
             String nodeId,
-            boolean created
+            boolean created,
+            Optional<String> movedFrom
     ) {}
 }

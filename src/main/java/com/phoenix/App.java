@@ -7,13 +7,15 @@ import com.phoenix.core.NodeHealthMonitor;
 import com.phoenix.core.PhoenixModule;
 import com.phoenix.dispatch.TaskAdmission;
 import com.phoenix.net.RegistrationServer;
+import com.phoenix.net.mqtt.MqttNodeGateway;
 import com.phoenix.tui.PhoenixTui;
 
 /**
  * Phoenix Core entry point: wires the module, starts the node-agent gateway,
  * health monitoring and task admission, then runs the operator console.
  *
- * <p>The gateway listens on {@code phoenix.port} (default 8080).
+ * <p>The HTTP gateway listens on {@code phoenix.port} (default 8080). The
+ * MQTT gateway connects to the broker in {@code phoenix.mqtt.url}, if set.
  */
 public class App {
 
@@ -47,12 +49,21 @@ public class App {
                         InFlightAttemptReconciler.class
                 );
 
+        // Resolved first so an invalid phoenix.mqtt.* setting stops Core
+        // before anything starts.
+        MqttNodeGateway mqttGateway =
+                injector.getInstance(
+                        MqttNodeGateway.class
+                );
+
         // Subscribe before any node can be declared OFFLINE.
         inFlightReconciler.start();
 
         server.start(
                 Integer.getInteger("phoenix.port", DEFAULT_PORT)
         );
+
+        mqttGateway.start();
 
         nodeHealthMonitor.start();
 
@@ -75,6 +86,7 @@ public class App {
 
             taskAdmission.stop();
             nodeHealthMonitor.stop();
+            mqttGateway.stop();
             server.stop();
         }
     }

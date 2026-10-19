@@ -23,6 +23,7 @@ import com.phoenix.dispatch.TaskAdmission;
 import com.phoenix.dispatch.TaskDispatcher;
 import com.phoenix.model.NodeRecord;
 import com.phoenix.model.TaskDescriptor;
+import com.phoenix.net.mqtt.MqttBrokerLink;
 
 /**
  * Terminal dashboard for Phoenix Core: nodes, recent tasks and the event log.
@@ -44,6 +45,7 @@ public class PhoenixTui {
     private final TaskAdmission taskAdmission;
     private final TaskJournal taskJournal;
     private final PhoenixEventLog eventLog;
+    private final MqttBrokerLink broker;
 
     private final AtomicInteger taskCounter = new AtomicInteger(1);
     private final AtomicBoolean running = new AtomicBoolean(true);
@@ -55,12 +57,14 @@ public class PhoenixTui {
             DeviceRegistry registry,
             TaskAdmission taskAdmission,
             TaskJournal taskJournal,
-            PhoenixEventLog eventLog) {
+            PhoenixEventLog eventLog,
+            MqttBrokerLink broker) {
 
         this.registry = registry;
         this.taskAdmission = taskAdmission;
         this.taskJournal = taskJournal;
         this.eventLog = eventLog;
+        this.broker = broker;
     }
 
     /** Runs the dashboard on the calling thread until the operator quits. */
@@ -189,8 +193,16 @@ public class PhoenixTui {
                 + System.getProperty("phoenix.advertiseAddress", "127.0.0.1");
         int addressX = 52;
 
-        if (addressX + addressText.length() < width - 15) {
+        if (addressX + addressText.length() < width - 23) {
             g.putString(addressX, 0, addressText);
+        }
+
+        // Broker link, beside the RUNNING badge so it fits any width.
+        String mqtt = broker.statusLabel();
+        if (!"off".equals(mqtt)) {
+            boolean up = "connected".equals(mqtt);
+            g.setForegroundColor(up ? TextColor.ANSI.GREEN : TextColor.ANSI.YELLOW);
+            g.putString(Math.max(0, width - 22), 0, up ? "MQTT ●" : "MQTT ○");
         }
 
         g.setForegroundColor(TextColor.ANSI.GREEN);

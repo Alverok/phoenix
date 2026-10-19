@@ -249,13 +249,6 @@ public class RegistrationServer {
                             initialStatus
                     );
 
-        // `previousTransport` is read separately from the atomic attachment operation,
-        // so it can be stale, hence held out in this refactor (need to be verified).
-
-        //     Optional<String> previousTransport =
-        //             attachments.nodeIdFor(announcement.deviceId)
-        //                     .flatMap(attachments::transportOf);
-
             NodeAttachments.Attachment attachment =
                     attachments.attach(
                             announcement.deviceId,
@@ -269,21 +262,14 @@ public class RegistrationServer {
 
             if (!attachment.created()) {
 
-                // System.out.printf(
-                //         "[RegistrationServer] Device %s already registered as node %s%s%n",
-                //         announcement.deviceId,
-                //         nodeId,
-                //         previousTransport
-                //                 .filter(previous -> !TRANSPORT_ID.equals(previous))
-                //                 .map(previous -> " (moved from " + previous + " to "
-                //                         + TRANSPORT_ID + ")")
-                //                 .orElse("")
-                // );
-
                 System.out.printf(
-                        "[RegistrationServer] Device %s already registered as node %s%n",
+                        "[RegistrationServer] Device %s already registered as node %s%s%n",
                         announcement.deviceId,
-                        nodeId
+                        nodeId,
+                        attachment.movedFrom()
+                                .map(previous -> " (moved from " + previous + " to "
+                                         + TRANSPORT_ID + ")")
+                                .orElse("")
                 );
 
                 rememberProtocolFeatures(announcement, nodeId);

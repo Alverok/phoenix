@@ -6,13 +6,18 @@ package com.phoenix.net;
  * <p>Covers quotes, backslashes and every control character, so text taken
  * from exceptions or from node-supplied ids can never break a response body.
  */
-final class JsonText {
+public final class JsonText {
 
     private JsonText() {
     }
 
-    /** Escapes {@code value} for use inside a JSON string; {@code null} becomes empty. */
-    static String escape(String value) {
+    /**
+     * Escapes {@code value} for use inside a JSON string; {@code null} becomes empty.
+     *
+     * @param value text to escape
+     * @return the escaped text, without surrounding quotes
+     */
+    public static String escape(String value) {
         if (value == null) {
             return "";
         }

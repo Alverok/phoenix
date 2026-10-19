@@ -1,0 +1,14 @@
+# Mosquitto ACL for the Phoenix MQTT protocol (topics phoenix/v1/...).
+#
+# Phoenix Core reads every node's uplink and writes every node's downlink and
+# its own retained status.
+user phoenix-core
+topic readwrite phoenix/v1/#
+
+# Every other user is a node agent whose user name is its deviceId (for a
+# TLS-PSK listener with use_identity_as_username, its PSK identity). It may
+# publish only on its own uplink, read only its own downlink, and read Core's
+# status. A node therefore cannot impersonate, or eavesdrop on, another node.
+pattern write phoenix/v1/nodes/%u/up/#
+pattern read phoenix/v1/nodes/%u/down/#
+pattern read phoenix/v1/core/status

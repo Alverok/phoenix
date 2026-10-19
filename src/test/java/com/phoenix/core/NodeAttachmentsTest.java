@@ -11,8 +11,8 @@ import java.util.Set;
 import java.util.concurrent.Callable;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.ExecutorService;
-import java.util.concurrent.Future;
 import java.util.concurrent.Executors;
+import java.util.concurrent.Future;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
@@ -48,6 +48,18 @@ class NodeAttachmentsTest {
 
         attachments.attach("dev-1", "http", () -> "unused");
         assertEquals(Optional.of("http"), attachments.transportOf("node-1"));
+    }
+
+    @Test
+    void anAttachmentReportsTheTransportItReplaced() {
+
+        assertTrue(attachments.attach("dev-1", "http", () -> "node-1").movedFrom().isEmpty());
+        assertTrue(attachments.attach("dev-1", "http", () -> "unused").movedFrom().isEmpty());
+
+        assertEquals(Optional.of("http"),
+                attachments.attach("dev-1", "mqtt", () -> "unused").movedFrom());
+        assertEquals(Optional.of("mqtt"),
+                attachments.attach("dev-1", "http", () -> "unused").movedFrom());
     }
 
     @Test

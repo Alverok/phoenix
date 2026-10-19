@@ -15,6 +15,11 @@ package com.phoenix.model;
  *         result came back in time.</li>
  * </ul>
  *
+ * <p>{@link #TRANSPORT_UNAVAILABLE} covers the one failure that is Core's
+ * own: Core could not hand the task to its transport at all (for example its
+ * link to the MQTT broker is down). The task is re-placed, but the node is
+ * not blamed.
+ *
  * <p>{@link #TIMEOUT} is retained as the unclassified fallback for transports
  * that cannot distinguish these phases. It is treated conservatively (as an
  * execution-style failure) so detection of unresponsive nodes is never weakened.
@@ -30,6 +35,8 @@ public enum TaskFailureReason {
     EXECUTION_TIMEOUT,
     NODE_UNREACHABLE,
     TRANSPORT_ERROR,
+    /** Core's own side of the transport was unavailable; the node is not implicated. */
+    TRANSPORT_UNAVAILABLE,
     NODE_OFFLINE,
     NO_ELIGIBLE_NODE
 }

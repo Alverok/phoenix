@@ -43,6 +43,7 @@ public record TaskResult(
                  EXECUTION_TIMEOUT,
                  NODE_UNREACHABLE,
                  TRANSPORT_ERROR,
+                 TRANSPORT_UNAVAILABLE,
                  NODE_OFFLINE -> true;
             case NONE,
                  EXECUTION_ERROR,
@@ -65,6 +66,9 @@ public record TaskResult(
      *         because {@code NodeHealthMonitor} had already declared the node
      *         OFFLINE. Feeding it back would re-penalise a node whose
      *         liveness has since been re-established by a fresh heartbeat.</li>
+     *     <li>{@link TaskFailureReason#TRANSPORT_UNAVAILABLE} is retryable but
+     *         says nothing about the node: Core itself could not reach its
+     *         transport (for example its broker link was down).</li>
      * </ul>
      *
      * Every other retryable failure keeps its existing meaning.
@@ -77,6 +81,7 @@ public record TaskResult(
                  TRANSPORT_ERROR -> true;
             case DELIVERY_TIMEOUT,
                  NODE_OFFLINE,
+                 TRANSPORT_UNAVAILABLE,
                  NONE,
                  EXECUTION_ERROR,
                  NO_ELIGIBLE_NODE -> false;

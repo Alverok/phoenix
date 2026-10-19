@@ -11,6 +11,15 @@ Phoenix Core requires JDK 21. Gradle is provided by the wrapper.
 
 Test reports are written to `build/reports/tests/test/index.html`.
 
+The MQTT broker integration tests (`MqttMosquittoIntegrationTest`) start a real
+Mosquitto with the files in `deploy/mosquitto`. They need `mosquitto`,
+`mosquitto_passwd`, `openssl` and `bash`, and are skipped when any is missing:
+
+```bash
+sudo apt install mosquitto      # Debian/Ubuntu; CI installs it too
+brew install mosquitto          # macOS
+```
+
 The build treats compiler warnings as errors (`-Xlint:all -Werror`) and
 `check` builds the Javadoc with doclint, so a broken `{@link}` or malformed
 HTML in a doc comment fails the build.

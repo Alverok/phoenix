@@ -24,17 +24,28 @@ import com.phoenix.model.TaskDescriptor;
  * </ul>
  *
  * <p>A {@link AttemptFencing#LEGACY} node never sees either field.
+ *
+ * <p>Public because every transport, including the MQTT one in
+ * {@code com.phoenix.net.mqtt}, must describe a task identically.
  */
-final class TaskWire {
+public final class TaskWire {
 
     /** Monte-Carlo sample count until task payloads become part of the model. */
-    static final long DEFAULT_SAMPLES = 2_000_000L;
+    public static final long DEFAULT_SAMPLES = 2_000_000L;
 
     private TaskWire() {
     }
 
-    /** The complete JSON body for one attempt of {@code task}. */
-    static String taskBody(
+    /**
+     * The complete JSON body for one attempt of {@code task}.
+     *
+     * @param task          the task
+     * @param fencing       whether the attempt identity is included
+     * @param attemptId     opaque id of the attempt
+     * @param attemptNumber 1, 2, 3 ... for the task
+     * @return the JSON body
+     */
+    public static String taskBody(
             TaskDescriptor task,
             AttemptFencing fencing,
             String attemptId,
