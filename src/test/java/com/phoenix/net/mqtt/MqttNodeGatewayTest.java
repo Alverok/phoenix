@@ -227,6 +227,25 @@ class MqttNodeGatewayTest {
         assertTrue(f.attachments.nodeIdFor("android-a1").isEmpty());
     }
 
+    @Test
+    void aMalformedHeartbeatChangesNothingAndDoesNotEndTheSession() {
+
+        FakeMqttAgent agent = f.agent("android-a1");
+        agent.heartbeat();
+
+        var before = node(agent.nodeId).status();
+
+        agent.publish(MqttTopics.Up.HEARTBEAT, "{not json");
+        agent.publish(MqttTopics.Up.HEARTBEAT, "[]");
+
+        assertEquals(before, node(agent.nodeId).status());
+        assertTrue(f.sessions.get("android-a1").isPresent());
+
+        // The next valid heartbeat is still accepted.
+        agent.heartbeat();
+        assertEquals(NodeStatus.ONLINE, node(agent.nodeId).state());
+    }
+
     // ------------------------------------------------------------------
     // topics and payloads
     // ------------------------------------------------------------------
